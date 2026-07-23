@@ -3,6 +3,7 @@ import { GRID_HEIGHT, GRID_WIDTH } from '@bomberman/shared';
 import { TILE_SIZE } from './textures';
 import { BootScene } from './scenes/BootScene';
 import { MenuScene } from './scenes/MenuScene';
+import { LobbyScene } from './scenes/LobbyScene';
 import { GameScene, HUD_HEIGHT } from './scenes/GameScene';
 
 new Phaser.Game({
@@ -15,5 +16,5 @@ new Phaser.Game({
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },
-  scene: [BootScene, MenuScene, GameScene],
+  scene: [BootScene, MenuScene, LobbyScene, GameScene],
 });

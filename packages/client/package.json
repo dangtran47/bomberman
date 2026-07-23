@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@bomberman/shared": "*",
+    "colyseus.js": "^0.16.22",
     "phaser": "^3.87.0"
   },
   "devDependencies": {
