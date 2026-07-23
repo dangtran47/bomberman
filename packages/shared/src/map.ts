@@ -2,12 +2,12 @@ import { GRID_HEIGHT, GRID_WIDTH, SOFT_BLOCK_DENSITY } from './constants';
 import { createRng } from './rng';
 import { TileType } from './types';
 
-export const SPAWN_POINTS: { col: number; row: number }[] = [
-  { col: 0, row: 0 },
-  { col: GRID_WIDTH - 1, row: 0 },
-  { col: 0, row: GRID_HEIGHT - 1 },
-  { col: GRID_WIDTH - 1, row: GRID_HEIGHT - 1 },
-];
+export const SPAWN_POINTS: readonly Readonly<{ col: number; row: number }>[] = Object.freeze([
+  Object.freeze({ col: 0, row: 0 }),
+  Object.freeze({ col: GRID_WIDTH - 1, row: 0 }),
+  Object.freeze({ col: 0, row: GRID_HEIGHT - 1 }),
+  Object.freeze({ col: GRID_WIDTH - 1, row: GRID_HEIGHT - 1 }),
+]);
 
 /**
  * Generates a row-major [row][col] grid: hard blocks on the classic odd/odd

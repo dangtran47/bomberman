@@ -187,6 +187,8 @@ export class GameRoom extends Room<RoomState> {
 }
 
 function sanitizeNickname(raw: unknown, slotIndex: number): string {
-  const trimmed = typeof raw === 'string' ? raw.trim().slice(0, MAX_NICKNAME_LENGTH) : '';
+  const cleaned =
+    typeof raw === 'string' ? raw.replace(/[^\x20-\x7E]/g, '').trim() : '';
+  const trimmed = cleaned.slice(0, MAX_NICKNAME_LENGTH).trim();
   return trimmed !== '' ? trimmed : `Player ${slotIndex + 1}`;
 }

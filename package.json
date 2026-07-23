@@ -1,6 +1,9 @@
 {
   "name": "bomberman",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "workspaces": [
     "packages/*"
   ],

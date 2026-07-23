@@ -94,6 +94,8 @@ Notes:
   and serves `GET /health` for the configured health check.
 - Colyseus WebSockets work through Fly's standard `http_service` proxy — no
   extra config.
+- The room-code registry lives in in-process memory, so keep the Fly app at a
+  single machine (do not scale horizontally).
 
 ### 2. Client on Cloudflare Pages
 
