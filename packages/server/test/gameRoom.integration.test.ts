@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import { Client } from 'colyseus.js';
 import type { Room } from 'colyseus.js';
+import { GRID_WIDTH, TileType, generateMap } from '@bomberman/shared';
 import { createApp } from '../src/app';
 import { hashSeed } from '../src/rooms/GameRoom';
 
@@ -129,7 +130,7 @@ describe('create/join/start/move flow', () => {
     expect(after.status).toBe(404);
   });
 
-  it('fills empty slots with bots when fillBots is on', async () => {
+  it('fills empty slots with bots when fillBots is on', { timeout: 20_000 }, async () => {
     const host: AnyRoom = await new Client(wsUrl).create('game', { nickname: 'Solo' });
     try {
       await until(() => host.state?.code?.length === 4, 3000, 'state ready');
@@ -140,6 +141,15 @@ describe('create/join/start/move flow', () => {
       const bots = [...host.state.players.values()].filter((p: { isBot: boolean }) => p.isBot);
       expect(bots).toHaveLength(3);
       await until(() => host.state.tick > 2, 3000, 'sim ticking with bots');
+
+      // Bots bomb soft blocks; destroyedBlocks indices must line up with the
+      // grid the client regenerates locally from the synced seed.
+      await until(() => host.state.destroyedBlocks.length > 0, 15_000, 'a block destroyed');
+      const grid = generateMap(host.state.seed);
+      const index: number = host.state.destroyedBlocks[0];
+      const row = Math.floor(index / GRID_WIDTH);
+      const col = index % GRID_WIDTH;
+      expect(grid[row][col]).toBe(TileType.SoftBlock);
     } finally {
       await host.leave();
     }
