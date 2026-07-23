@@ -12,6 +12,7 @@ import {
   generateMap,
 } from '@bomberman/shared';
 import type { Bot, Direction, Game, GameEvent, PlayerInput, PowerupType } from '@bomberman/shared';
+import { audio } from '../audio';
 import type { GameRoomConnection, NetRoomState } from '../net';
 import { TEX, TILE_SIZE } from '../textures';
 
@@ -112,6 +113,10 @@ export class GameScene extends Phaser.Scene {
   };
 
   private gameOver = false;
+  /** Sudden-death alarm fired (once per match, when the countdown hits 10s). */
+  private suddenDeathWarned = false;
+  /** Online: last-seen alive flags, to derive death sounds from state diffs. */
+  private prevAlive = new Map<string, boolean>();
 
   private directionKeys: [Phaser.Input.Keyboard.Key, Direction][] = [];
   private spaceKey!: Phaser.Input.Keyboard.Key;
@@ -139,6 +144,8 @@ export class GameScene extends Phaser.Scene {
     this.lastSentDirection = null;
     this.keepaliveMs = 0;
     this.roomClosed = false;
+    this.suddenDeathWarned = false;
+    this.prevAlive.clear();
     this.playerSprites.clear();
     this.softBlockSprites.clear();
     this.bombSprites.clear();
@@ -216,8 +223,26 @@ export class GameScene extends Phaser.Scene {
   }
 
   private handleEvent(event: GameEvent): void {
-    if (event.type === 'arenaShrink') this.showShrunkTile(event.col, event.row);
-    else if (event.type === 'gameEnded') this.showGameOver(event.winnerId);
+    switch (event.type) {
+      case 'bombPlaced':
+        audio.bombPlace();
+        break;
+      case 'bombExploded':
+        audio.explosion();
+        break;
+      case 'powerupCollected':
+        audio.powerup();
+        break;
+      case 'playerDied':
+        audio.death();
+        break;
+      case 'arenaShrink':
+        this.showShrunkTile(event.col, event.row);
+        break;
+      case 'gameEnded':
+        this.showGameOver(event.winnerId);
+        break;
+    }
   }
 
   // --- online: render server state, send inputs ---
@@ -240,6 +265,7 @@ export class GameScene extends Phaser.Scene {
 
     const state = this.renderStateFromRoom();
     this.reconcile(state);
+    this.trackOnlineDeaths(state);
     this.updateHud(state);
     this.positionPlayers(state, ONLINE_LERP);
 
@@ -302,6 +328,14 @@ export class GameScene extends Phaser.Scene {
       this.showShrunkTile(col, row);
     });
     this.appliedShrunk = s.arenaShrunk.length;
+  }
+
+  /** Online: events are not streamed, so death sounds derive from alive-flag diffs. */
+  private trackOnlineDeaths(state: RenderState): void {
+    for (const player of state.players) {
+      if (this.prevAlive.get(player.id) === true && !player.alive) audio.death();
+      this.prevAlive.set(player.id, player.alive);
+    }
   }
 
   // --- input ---
@@ -417,6 +451,7 @@ export class GameScene extends Phaser.Scene {
     }
     for (const bomb of state.bombs) {
       if (this.bombSprites.has(bomb.id)) continue;
+      if (this.mode === 'online') audio.bombPlace(); // offline plays via bombPlaced event
       const sprite = this.add.image(toX(bomb.col), toY(bomb.row), TEX.bomb).setDepth(DEPTH.bomb);
       this.tweens.add({
         targets: sprite,
@@ -437,20 +472,33 @@ export class GameScene extends Phaser.Scene {
         this.explosionSprites.delete(key);
       }
     }
+    let appeared = false;
     for (const cell of state.explosions) {
       const key = cellKey(cell.col, cell.row);
       if (this.explosionSprites.has(key)) continue;
+      appeared = true;
       this.explosionSprites.set(
         key,
         this.add.image(toX(cell.col), toY(cell.row), TEX.explosion).setDepth(DEPTH.explosion),
       );
     }
+    // One boom per frame no matter how many cells appeared (offline: event-driven).
+    if (appeared && this.mode === 'online') audio.explosion();
   }
 
   private reconcilePowerups(state: RenderState): void {
     const live = new Map(state.powerups.map((p) => [cellKey(p.col, p.row), TEX.powerup[p.type]]));
     for (const [key, entry] of this.powerupSprites) {
       if (live.get(key) !== entry.texture) {
+        // Online pickup sound: the powerup vanished under a living player
+        // (burned/crushed powerups vanish with nobody standing there).
+        if (this.mode === 'online') {
+          const [col, row] = key.split(',').map(Number);
+          const collected = state.players.some(
+            (p) => p.alive && Math.round(p.x) === col && Math.round(p.y) === row,
+          );
+          if (collected) audio.powerup();
+        }
         entry.sprite.destroy();
         this.powerupSprites.delete(key);
       }
@@ -480,8 +528,18 @@ export class GameScene extends Phaser.Scene {
       })
       .setOrigin(0, 0.5)
       .setDepth(DEPTH.hud);
+    const muteButton = this.add
+      .text(this.scale.width - 12, HUD_HEIGHT / 2, audio.isMuted() ? '🔇' : '🔊', {
+        fontSize: '20px',
+      })
+      .setOrigin(1, 0.5)
+      .setDepth(DEPTH.hud)
+      .setInteractive({ useHandCursor: true });
+    muteButton.on('pointerdown', () => {
+      muteButton.setText(audio.toggleMuted() ? '🔇' : '🔊');
+    });
     this.suddenDeathText = this.add
-      .text(this.scale.width - 12, HUD_HEIGHT / 2, '', {
+      .text(this.scale.width - 48, HUD_HEIGHT / 2, '', {
         fontFamily: 'monospace',
         fontSize: '16px',
         color: '#ffe040',
@@ -506,6 +564,10 @@ export class GameScene extends Phaser.Scene {
       this.suddenDeathText.setText('SUDDEN DEATH').setColor('#ff5040');
       return;
     }
+    if (ticksLeft <= 10 * TICK_RATE && !this.suddenDeathWarned) {
+      this.suddenDeathWarned = true;
+      audio.suddenDeathWarning();
+    }
     const seconds = Math.ceil(ticksLeft / TICK_RATE);
     const m = Math.floor(seconds / 60);
     const s = String(seconds % 60).padStart(2, '0');
@@ -516,6 +578,7 @@ export class GameScene extends Phaser.Scene {
 
   private showGameOver(winnerId: string | null): void {
     this.gameOver = true;
+    if (winnerId === this.myId) audio.win();
     const cx = this.scale.width / 2;
     const cy = this.scale.height / 2;
 
