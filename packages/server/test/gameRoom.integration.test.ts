@@ -24,11 +24,18 @@ afterAll(async () => {
   await gameServer.gracefullyShutdown(false);
 });
 
-async function until(cond: () => boolean, timeoutMs = 3000, what = 'condition'): Promise<void> {
+async function until(
+  cond: () => boolean,
+  timeoutMs = 3000,
+  what = 'condition',
+  probe?: () => Promise<void>,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  await probe?.();
   while (!cond()) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await new Promise((r) => setTimeout(r, 25));
+    await probe?.();
   }
 }
 
@@ -62,9 +69,10 @@ describe('server http endpoints', () => {
 describe('create/join/start/move flow', () => {
   it('runs a full round-trip: create, join by code, start, inputs move players', async () => {
     const host: AnyRoom = await new Client(wsUrl).create('game', { nickname: 'Alice' });
+    let code = '';
     try {
       await until(() => host.state?.code?.length === 4, 3000, 'room code in state');
-      const code: string = host.state.code;
+      code = host.state.code;
       expect(code).toMatch(/^[A-Z]{4}$/);
       expect(host.state.phase).toBe('lobby');
 
@@ -120,14 +128,18 @@ describe('create/join/start/move flow', () => {
       await host.leave();
     }
 
-    // Once everyone leaves, the room disposes and the code frees up.
+    // Once everyone leaves, the room disposes and its code is released:
+    // poll the real code until the lookup 404s.
+    let status = 0;
     await until(
-      () => false as boolean,
-      400,
-      'grace period',
-    ).catch(() => undefined);
-    const after = await fetch(`${httpUrl}/room/AAAA`);
-    expect(after.status).toBe(404);
+      () => status === 404,
+      3000,
+      `code ${code} released after dispose`,
+      async () => {
+        status = (await fetch(`${httpUrl}/room/${code}`)).status;
+      },
+    );
+    expect(status).toBe(404);
   });
 
   it('fills empty slots with bots when fillBots is on', { timeout: 20_000 }, async () => {
