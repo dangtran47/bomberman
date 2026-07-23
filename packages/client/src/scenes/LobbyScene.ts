@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import type { GameRoomConnection, NetPlayer } from '../net';
+import { addMenuBackdrop } from '../textures';
 import type { GameSceneData } from './GameScene';
 
 export interface LobbySceneData {
@@ -35,6 +36,8 @@ export class LobbyScene extends Phaser.Scene {
     this.started = false;
     const cx = this.scale.width / 2;
     const style = { fontFamily: 'monospace', color: '#ffffff' };
+
+    addMenuBackdrop(this);
 
     this.add.text(cx, 80, 'ROOM CODE', { ...style, fontSize: '24px', color: '#999999' }).setOrigin(0.5);
     this.codeText = this.add

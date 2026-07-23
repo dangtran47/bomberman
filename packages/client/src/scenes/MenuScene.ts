@@ -1,12 +1,22 @@
 import Phaser from 'phaser';
 import { createRoom, joinRoom } from '../net';
 import type { GameRoomConnection } from '../net';
+import { SPRITE_SIZE, TEX, addImage, addMenuBackdrop } from '../textures';
 import type { GameSceneData } from './GameScene';
 import type { LobbySceneData } from './LobbyScene';
 
 export interface MenuSceneData {
   error?: string;
 }
+
+/** Generated rounded-rect button background (white, tinted per state). */
+const BUTTON_TEX = 'ui-button';
+const BUTTON_WIDTH = 280;
+const BUTTON_HEIGHT = 54;
+const BUTTON_RADIUS = 12;
+/** Tints applied to the white button texture (tint can only darken). */
+const BUTTON_TINT = 0x26263e;
+const BUTTON_TINT_HOVER = 0x4a4a78;
 
 interface DialogField {
   label: string;
@@ -28,14 +38,10 @@ export class MenuScene extends Phaser.Scene {
     this.busy = false;
     const cx = this.scale.width / 2;
 
-    this.add
-      .text(cx, 120, 'BOMBERMAN', {
-        fontFamily: 'monospace',
-        fontSize: '64px',
-        color: '#ffffff',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5);
+    addMenuBackdrop(this);
+
+    const title = addImage(this, cx, 120, TEX.title);
+    title.setScale(SPRITE_SIZE.titleWidth / title.width);
 
     this.addButton(cx, 280, 'Play vs Bots', () => {
       const gameData: GameSceneData = { mode: 'offline', seed: Date.now() >>> 0 };
@@ -79,18 +85,38 @@ export class MenuScene extends Phaser.Scene {
     this.events.once('shutdown', () => this.closeDialog());
   }
 
+  /** Lazily generates the white rounded-rect texture the buttons tint. */
+  private ensureButtonTexture(): void {
+    if (this.textures.exists(BUTTON_TEX)) return;
+    const g = this.add.graphics();
+    g.fillStyle(0xffffff).fillRoundedRect(0, 0, BUTTON_WIDTH, BUTTON_HEIGHT, BUTTON_RADIUS);
+    g.generateTexture(BUTTON_TEX, BUTTON_WIDTH, BUTTON_HEIGHT);
+    g.destroy();
+  }
+
   private addButton(x: number, y: number, label: string, onClick: () => void): void {
+    this.ensureButtonTexture();
+    const bg = this.add
+      .image(x, y, BUTTON_TEX)
+      .setTint(BUTTON_TINT)
+      .setAlpha(0.92)
+      .setInteractive({ useHandCursor: true });
     const text = this.add
       .text(x, y, label, {
         fontFamily: 'monospace',
-        fontSize: '32px',
+        fontSize: '28px',
         color: '#ffe040',
       })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true });
-    text.on('pointerover', () => text.setColor('#ffffff'));
-    text.on('pointerout', () => text.setColor('#ffe040'));
-    text.on('pointerdown', onClick);
+      .setOrigin(0.5);
+    bg.on('pointerover', () => {
+      bg.setTint(BUTTON_TINT_HOVER);
+      text.setColor('#ffffff');
+    });
+    bg.on('pointerout', () => {
+      bg.setTint(BUTTON_TINT);
+      text.setColor('#ffe040');
+    });
+    bg.on('pointerdown', onClick);
   }
 
   private async connect(open: () => Promise<GameRoomConnection>): Promise<void> {
