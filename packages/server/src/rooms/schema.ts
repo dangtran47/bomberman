@@ -48,6 +48,8 @@ export class RoomState extends Schema {
   @type('number') seed = 0;
   /** row * GRID_WIDTH + col indices of soft blocks destroyed so far (append-only). */
   @type(['number']) destroyedBlocks = new ArraySchema<number>();
+  /** row * GRID_WIDTH + col indices of tiles converted to HardBlock by sudden death (append-only). */
+  @type(['number']) arenaShrunk = new ArraySchema<number>();
   @type({ map: PlayerSchema }) players = new MapSchema<PlayerSchema>();
   @type({ map: BombSchema }) bombs = new MapSchema<BombSchema>();
   @type([ExplosionSchema]) explosions = new ArraySchema<ExplosionSchema>();

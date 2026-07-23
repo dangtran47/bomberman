@@ -1,4 +1,5 @@
 import { GRID_HEIGHT, GRID_WIDTH } from './constants';
+import { SHRINK_ORDER, shrinkCountAtTick } from './suddenDeath';
 import { TileType } from './types';
 import type { GameState } from './game';
 import type { Direction, PlayerInput } from './types';
@@ -15,6 +16,9 @@ export interface Bot {
 
 /** BFS depth limit for the powerup-collection rule. */
 const POWERUP_SEARCH_DEPTH = 8;
+
+/** Tiles converting to HardBlock within this many ticks count as dangerous. */
+const SHRINK_LOOKAHEAD_TICKS = 40; // 2s
 
 /** Fixed neighbor scan order keeps BFS tie-breaking deterministic without rng. */
 const NEIGHBOR_STEPS: { dc: number; dr: number; dir: Direction }[] = [
@@ -82,6 +86,13 @@ function buildContext(state: GameState): BotContext {
     forEachBlastCell(state, bombTiles, bomb.col, bomb.row, bomb.blastRadius, (c, r) =>
       danger.add(key(c, r)),
     );
+  }
+  // Sudden death: tiles about to be crushed are dangerous too. Already-converted
+  // tiles are HardBlock and impassable, so only upcoming ones matter.
+  const upcomingEnd = shrinkCountAtTick(state.tick + SHRINK_LOOKAHEAD_TICKS);
+  for (let i = shrinkCountAtTick(state.tick); i < upcomingEnd; i++) {
+    const cell = SHRINK_ORDER[i];
+    danger.add(key(cell.col, cell.row));
   }
   return { state, bombTiles, burning, danger };
 }

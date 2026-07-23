@@ -11,9 +11,12 @@ import {
   MAX_SPEED,
   POWERUP_DROP_CHANCE,
   SPEED_INCREMENT,
+  SUDDEN_DEATH_INTERVAL_TICKS,
+  SUDDEN_DEATH_START_TICKS,
   TICK_RATE,
 } from './constants';
 import { SPAWN_POINTS, generateMap } from './map';
+import { SHRINK_ORDER } from './suddenDeath';
 import { createRng } from './rng';
 import { PowerupType, TileType } from './types';
 import type { Bomb, Direction, ExplosionCell, Player, PlayerInput, Powerup } from './types';
@@ -51,6 +54,7 @@ export type GameEvent =
       powerupType: PowerupType;
     }
   | { type: 'playerDied'; playerId: string; col: number; row: number }
+  | { type: 'arenaShrink'; col: number; row: number }
   | { type: 'gameEnded'; winnerId: string | null };
 
 export type GameInputs = Map<string, PlayerInput> | Record<string, PlayerInput>;
@@ -153,6 +157,7 @@ class GameImpl implements Game {
 
     this.ageExplosions();
     this.detonateDueBombs(events);
+    this.applySuddenDeath(events);
     this.applyDeaths(events);
     this.collectPowerups(events);
     this.checkWin(events);
@@ -320,6 +325,43 @@ class GameImpl implements Game {
       const existing = s.explosions.find((c) => c.col === col && c.row === row);
       if (existing) existing.ticksLeft = EXPLOSION_DURATION_TICKS;
       else s.explosions.push({ col, row, ticksLeft: EXPLOSION_DURATION_TICKS });
+    }
+  }
+
+  /**
+   * Sudden death: from SUDDEN_DEATH_START_TICKS on, one tile per interval is
+   * converted to HardBlock following SHRINK_ORDER. A bomb caught on the tile
+   * is crushed (its slot returned to the owner, it never detonates), a
+   * powerup is destroyed, and a player standing there dies. Explosion cells
+   * are left alone — they expire naturally. A bomb whose fuse ends this very
+   * tick still detonates first (detonation runs before the shrink).
+   */
+  private applySuddenDeath(events: GameEvent[]): void {
+    const s = this.state;
+    if (s.tick < SUDDEN_DEATH_START_TICKS) return;
+    const elapsed = s.tick - SUDDEN_DEATH_START_TICKS;
+    if (elapsed % SUDDEN_DEATH_INTERVAL_TICKS !== 0) return;
+    const index = elapsed / SUDDEN_DEATH_INTERVAL_TICKS;
+    if (index >= SHRINK_ORDER.length) return;
+
+    const { col, row } = SHRINK_ORDER[index];
+    s.grid[row][col] = TileType.HardBlock;
+    events.push({ type: 'arenaShrink', col, row });
+
+    for (const bomb of s.bombs) {
+      if (bomb.col !== col || bomb.row !== row) continue;
+      const owner = s.players.find((p) => p.id === bomb.ownerId);
+      if (owner) owner.activeBombs--;
+    }
+    s.bombs = s.bombs.filter((b) => b.col !== col || b.row !== row);
+    s.powerups = s.powerups.filter((p) => p.col !== col || p.row !== row);
+
+    for (const player of s.players) {
+      if (!player.alive) continue;
+      if (Math.round(player.x) === col && Math.round(player.y) === row) {
+        player.alive = false;
+        events.push({ type: 'playerDied', playerId: player.id, col, row });
+      }
     }
   }
 

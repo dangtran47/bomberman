@@ -18,3 +18,8 @@ export const MAX_BLAST_RADIUS = 8;
 
 export const SOFT_BLOCK_DENSITY = 0.75; // fraction of eligible floor tiles that become soft blocks
 export const POWERUP_DROP_CHANCE = 0.3;
+
+export const SUDDEN_DEATH_START_TICKS = 2400; // 2min at 20tps
+export const SUDDEN_DEATH_INTERVAL_TICKS = 10; // one tile per 0.5s
+/** Border rings converted before the shrink stops (leaves rows 4-8 x cols 4-10 open). */
+export const SUDDEN_DEATH_RINGS = 4;

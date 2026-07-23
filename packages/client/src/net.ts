@@ -62,6 +62,8 @@ export interface NetRoomState {
   seed: number;
   /** row * GRID_WIDTH + col indices, append-only. */
   destroyedBlocks: NetArray<number>;
+  /** row * GRID_WIDTH + col indices converted to HardBlock by sudden death, append-only. */
+  arenaShrunk: NetArray<number>;
   players: NetMap<NetPlayer>;
   bombs: NetMap<NetBomb>;
   explosions: NetArray<NetExplosion>;

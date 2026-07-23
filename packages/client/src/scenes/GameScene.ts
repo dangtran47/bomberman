@@ -2,7 +2,9 @@ import Phaser from 'phaser';
 import {
   GRID_HEIGHT,
   GRID_WIDTH,
+  SUDDEN_DEATH_START_TICKS,
   TICK_MS,
+  TICK_RATE,
   TileType,
   createBot,
   createGame,
@@ -72,6 +74,7 @@ export interface RenderPlayer {
 }
 
 export interface RenderState {
+  tick: number;
   grid: TileType[][];
   players: RenderPlayer[];
   bombs: { id: number; col: number; row: number }[];
@@ -99,6 +102,7 @@ export class GameScene extends Phaser.Scene {
   private connection: GameRoomConnection | null = null;
   private grid: TileType[][] | null = null;
   private appliedDestroyed = 0;
+  private appliedShrunk = 0;
   private lastSentDirection: Direction | null = null;
   private keepaliveMs = 0;
   private roomClosed = false;
@@ -119,6 +123,7 @@ export class GameScene extends Phaser.Scene {
   private powerupSprites = new Map<string, { sprite: Phaser.GameObjects.Image; texture: string }>();
 
   private hudText!: Phaser.GameObjects.Text;
+  private suddenDeathText!: Phaser.GameObjects.Text;
 
   constructor() {
     super('Game');
@@ -130,6 +135,7 @@ export class GameScene extends Phaser.Scene {
     this.gameOver = false;
     this.pendingBomb = false;
     this.appliedDestroyed = 0;
+    this.appliedShrunk = 0;
     this.lastSentDirection = null;
     this.keepaliveMs = 0;
     this.roomClosed = false;
@@ -210,7 +216,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private handleEvent(event: GameEvent): void {
-    if (event.type === 'gameEnded') this.showGameOver(event.winnerId);
+    if (event.type === 'arenaShrink') this.showShrunkTile(event.col, event.row);
+    else if (event.type === 'gameEnded') this.showGameOver(event.winnerId);
   }
 
   // --- online: render server state, send inputs ---
@@ -245,6 +252,7 @@ export class GameScene extends Phaser.Scene {
   private renderStateFromRoom(): RenderState {
     const s: NetRoomState = this.connection!.room.state;
     this.applyDestroyedBlocks(s);
+    this.applyArenaShrunk(s);
 
     const players: RenderPlayer[] = [];
     s.players.forEach((p) =>
@@ -268,7 +276,7 @@ export class GameScene extends Phaser.Scene {
     const powerups: RenderState['powerups'] = [];
     s.powerups.forEach((p) => powerups.push({ col: p.col, row: p.row, type: p.type }));
 
-    return { grid: this.grid!, players, bombs, explosions, powerups };
+    return { tick: s.tick, grid: this.grid!, players, bombs, explosions, powerups };
   }
 
   /** Applies newly appended destroyedBlocks indices to the locally generated grid. */
@@ -281,6 +289,19 @@ export class GameScene extends Phaser.Scene {
       this.grid![row][col] = TileType.Floor;
     });
     this.appliedDestroyed = s.destroyedBlocks.length;
+  }
+
+  /** Applies newly appended sudden-death conversions to the local grid + visuals. */
+  private applyArenaShrunk(s: NetRoomState): void {
+    const applied = this.appliedShrunk;
+    s.arenaShrunk.forEach((index, i) => {
+      if (i < applied) return;
+      const row = Math.floor(index / GRID_WIDTH);
+      const col = index % GRID_WIDTH;
+      this.grid![row][col] = TileType.HardBlock;
+      this.showShrunkTile(col, row);
+    });
+    this.appliedShrunk = s.arenaShrunk.length;
   }
 
   // --- input ---
@@ -315,6 +336,20 @@ export class GameScene extends Phaser.Scene {
         }
       }
     }
+  }
+
+  /** Renders a sudden-death conversion: permanent hard block + brief flash. */
+  private showShrunkTile(col: number, row: number): void {
+    this.add.image(toX(col), toY(row), TEX.hardBlock).setDepth(DEPTH.block);
+    const flash = this.add
+      .rectangle(toX(col), toY(row), TILE_SIZE, TILE_SIZE, 0xffffff, 0.8)
+      .setDepth(DEPTH.explosion);
+    this.tweens.add({
+      targets: flash,
+      alpha: 0,
+      duration: 250,
+      onComplete: () => flash.destroy(),
+    });
   }
 
   private createPlayerSprites(state: RenderState): void {
@@ -445,15 +480,36 @@ export class GameScene extends Phaser.Scene {
       })
       .setOrigin(0, 0.5)
       .setDepth(DEPTH.hud);
+    this.suddenDeathText = this.add
+      .text(this.scale.width - 12, HUD_HEIGHT / 2, '', {
+        fontFamily: 'monospace',
+        fontSize: '16px',
+        color: '#ffe040',
+      })
+      .setOrigin(1, 0.5)
+      .setDepth(DEPTH.hud);
   }
 
   private updateHud(state: RenderState): void {
+    this.updateSuddenDeathHud(state.tick);
     const me = state.players.find((p) => p.id === this.myId);
     const aliveCount = state.players.filter((p) => p.alive).length;
     if (!me) return;
     this.hudText.setText(
       `Bombs: ${me.bombCount}   Blast: ${me.blastRadius}   Speed: ${me.speed.toFixed(1)}   Alive: ${aliveCount}`,
     );
+  }
+
+  private updateSuddenDeathHud(tick: number): void {
+    const ticksLeft = SUDDEN_DEATH_START_TICKS - tick;
+    if (ticksLeft <= 0) {
+      this.suddenDeathText.setText('SUDDEN DEATH').setColor('#ff5040');
+      return;
+    }
+    const seconds = Math.ceil(ticksLeft / TICK_RATE);
+    const m = Math.floor(seconds / 60);
+    const s = String(seconds % 60).padStart(2, '0');
+    this.suddenDeathText.setText(`Sudden death in ${m}:${s}`);
   }
 
   // --- game over ---

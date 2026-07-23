@@ -155,6 +155,8 @@ export class GameRoom extends Room<RoomState> {
     for (const event of events) {
       if (event.type === 'blockDestroyed') {
         this.state.destroyedBlocks.push(event.row * GRID_WIDTH + event.col);
+      } else if (event.type === 'arenaShrink') {
+        this.state.arenaShrunk.push(event.row * GRID_WIDTH + event.col);
       } else if (event.type === 'gameEnded') {
         this.finishGame(event.winnerId);
       }
