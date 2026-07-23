@@ -14,7 +14,8 @@ import {
 import type { Bot, Direction, Game, GameEvent, PlayerInput, PowerupType } from '@bomberman/shared';
 import { audio } from '../audio';
 import type { GameRoomConnection, NetRoomState } from '../net';
-import { TEX, TILE_SIZE } from '../textures';
+import { SPRITE_SIZE, TEX, TILE_SIZE, addImage } from '../textures';
+import type { TexRef } from '../textures';
 
 export type GameSceneData =
   | { mode: 'offline'; seed: number }
@@ -32,6 +33,7 @@ const ONLINE_LERP = 0.35;
 const KEEPALIVE_MS = 100;
 
 const DEPTH = {
+  background: -1,
   floor: 0,
   block: 1,
   powerup: 2,
@@ -41,6 +43,18 @@ const DEPTH = {
   hud: 10,
   overlay: 20,
 } as const;
+
+/**
+ * Players are depth-sorted by grid y so lower players draw over higher ones
+ * (their heads poke into the tile above). Scaled down to stay below DEPTH.hud.
+ */
+const PLAYER_DEPTH_PER_ROW = 0.1;
+/** Bomb pulse tween grows the sprite to this multiple of its base scale. */
+const BOMB_PULSE = 1.15;
+/** Max random tilt (radians) applied to each explosion pom, visual only. */
+const EXPLOSION_MAX_TILT = 0.3;
+/** Powerup bob tween amplitude in pixels. */
+const POWERUP_BOB = 4;
 
 /** Key codes mapped to a direction (arrows + WASD). */
 const DIRECTION_KEYS: [key: string, dir: Direction][] = [
@@ -123,9 +137,11 @@ export class GameScene extends Phaser.Scene {
 
   private playerSprites = new Map<string, Phaser.GameObjects.Image>();
   private softBlockSprites = new Map<string, Phaser.GameObjects.Image>();
-  private bombSprites = new Map<number, Phaser.GameObjects.Image>();
+  private bombSprites = new Map<number, { sprite: Phaser.GameObjects.Image; col: number; row: number }>();
   private explosionSprites = new Map<string, Phaser.GameObjects.Image>();
-  private powerupSprites = new Map<string, { sprite: Phaser.GameObjects.Image; texture: string }>();
+  private powerupSprites = new Map<string, { sprite: Phaser.GameObjects.Image; ref: TexRef }>();
+  /** Cells whose bomb vanished this reconcile pass — the explosion's origin. */
+  private explosionCenters = new Set<string>();
 
   private hudText!: Phaser.GameObjects.Text;
   private suddenDeathText!: Phaser.GameObjects.Text;
@@ -151,6 +167,7 @@ export class GameScene extends Phaser.Scene {
     this.bombSprites.clear();
     this.explosionSprites.clear();
     this.powerupSprites.clear();
+    this.explosionCenters.clear();
 
     let initial: RenderState;
     if (data.mode === 'offline') {
@@ -362,19 +379,32 @@ export class GameScene extends Phaser.Scene {
   // --- rendering ---
 
   private drawStaticGrid(state: RenderState): void {
+    // Desert backdrop under the grid only; the HUD bar above stays solid dark.
+    addImage(this, 0, HUD_HEIGHT, TEX.background)
+      .setOrigin(0, 0)
+      .setDisplaySize(this.scale.width, GRID_HEIGHT * TILE_SIZE)
+      .setDepth(DEPTH.background);
     for (let row = 0; row < GRID_HEIGHT; row++) {
       for (let col = 0; col < GRID_WIDTH; col++) {
-        this.add.image(toX(col), toY(row), TEX.floor).setDepth(DEPTH.floor);
+        addImage(this, toX(col), toY(row), TEX.floor)
+          .setDisplaySize(TILE_SIZE, TILE_SIZE)
+          .setDepth(DEPTH.floor);
         if (state.grid[row][col] === TileType.HardBlock) {
-          this.add.image(toX(col), toY(row), TEX.hardBlock).setDepth(DEPTH.block);
+          this.addHardBlock(col, row);
         }
       }
     }
   }
 
+  /** Traffic-cone hard block, scaled by height and centered on the tile. */
+  private addHardBlock(col: number, row: number): Phaser.GameObjects.Image {
+    const img = addImage(this, toX(col), toY(row), TEX.hardBlock).setDepth(DEPTH.block);
+    return img.setScale(SPRITE_SIZE.hardBlockHeight / img.height);
+  }
+
   /** Renders a sudden-death conversion: permanent hard block + brief flash. */
   private showShrunkTile(col: number, row: number): void {
-    this.add.image(toX(col), toY(row), TEX.hardBlock).setDepth(DEPTH.block);
+    this.addHardBlock(col, row);
     const flash = this.add
       .rectangle(toX(col), toY(row), TILE_SIZE, TILE_SIZE, 0xffffff, 0.8)
       .setDepth(DEPTH.explosion);
@@ -388,11 +418,14 @@ export class GameScene extends Phaser.Scene {
 
   private createPlayerSprites(state: RenderState): void {
     for (const player of state.players) {
-      // Slot number (p0-p3) picks the color, consistent across both modes.
+      // Slot number (p0-p3) picks the character, consistent across both modes.
       const slot = Number(player.id.slice(1)) || 0;
-      const sprite = this.add
-        .image(toX(player.x), toY(player.y), TEX.players[slot % TEX.players.length])
+      const ref = TEX.players[slot % TEX.players.length];
+      // Anchored bottom-center at the tile bottom (classic Bomberman look).
+      const sprite = addImage(this, toX(player.x), toY(player.y) + TILE_SIZE / 2, ref)
+        .setOrigin(0.5, 1)
         .setDepth(DEPTH.player);
+      sprite.setScale(SPRITE_SIZE.playerHeight / sprite.height);
       this.playerSprites.set(player.id, sprite);
     }
   }
@@ -403,8 +436,9 @@ export class GameScene extends Phaser.Scene {
       const sprite = this.playerSprites.get(player.id);
       if (!sprite) continue;
       const tx = toX(player.x);
-      const ty = toY(player.y);
+      const ty = toY(player.y) + TILE_SIZE / 2; // bottom-anchored
       sprite.setPosition(sprite.x + (tx - sprite.x) * lerp, sprite.y + (ty - sprite.y) * lerp);
+      sprite.setDepth(DEPTH.player + player.y * PLAYER_DEPTH_PER_ROW);
       sprite.setAlpha(player.alive ? 1 : 0.3); // dead players linger as ghosts
     }
   }
@@ -430,7 +464,9 @@ export class GameScene extends Phaser.Scene {
         if (isSoft && !sprite) {
           this.softBlockSprites.set(
             key,
-            this.add.image(toX(col), toY(row), TEX.softBlock).setDepth(DEPTH.block),
+            addImage(this, toX(col), toY(row), TEX.softBlock)
+              .setDisplaySize(TILE_SIZE, TILE_SIZE)
+              .setDepth(DEPTH.block),
           );
         } else if (!isSoft && sprite) {
           sprite.destroy();
@@ -442,25 +478,30 @@ export class GameScene extends Phaser.Scene {
 
   private reconcileBombs(state: RenderState): void {
     const liveIds = new Set(state.bombs.map((b) => b.id));
-    for (const [id, sprite] of this.bombSprites) {
+    this.explosionCenters.clear();
+    for (const [id, entry] of this.bombSprites) {
       if (!liveIds.has(id)) {
-        this.tweens.killTweensOf(sprite);
-        sprite.destroy();
+        // A vanished bomb marks its cell as the explosion origin this pass.
+        this.explosionCenters.add(cellKey(entry.col, entry.row));
+        this.tweens.killTweensOf(entry.sprite);
+        entry.sprite.destroy();
         this.bombSprites.delete(id);
       }
     }
     for (const bomb of state.bombs) {
       if (this.bombSprites.has(bomb.id)) continue;
       if (this.mode === 'online') audio.bombPlace(); // offline plays via bombPlaced event
-      const sprite = this.add.image(toX(bomb.col), toY(bomb.row), TEX.bomb).setDepth(DEPTH.bomb);
+      const sprite = addImage(this, toX(bomb.col), toY(bomb.row), TEX.bomb).setDepth(DEPTH.bomb);
+      const base = SPRITE_SIZE.bombHeight / sprite.height;
+      sprite.setScale(base);
       this.tweens.add({
         targets: sprite,
-        scale: { from: 1, to: 1.15 },
+        scale: { from: base, to: base * BOMB_PULSE },
         duration: 300,
         yoyo: true,
         repeat: -1,
       });
-      this.bombSprites.set(bomb.id, sprite);
+      this.bombSprites.set(bomb.id, { sprite, col: bomb.col, row: bomb.row });
     }
   }
 
@@ -477,10 +518,13 @@ export class GameScene extends Phaser.Scene {
       const key = cellKey(cell.col, cell.row);
       if (this.explosionSprites.has(key)) continue;
       appeared = true;
-      this.explosionSprites.set(
-        key,
-        this.add.image(toX(cell.col), toY(cell.row), TEX.explosion).setDepth(DEPTH.explosion),
-      );
+      // Pink pom at the bomb's origin cell, yellow poms along the arms.
+      const ref = this.explosionCenters.has(key) ? TEX.explosionCenter : TEX.explosion;
+      const sprite = addImage(this, toX(cell.col), toY(cell.row), ref)
+        .setDisplaySize(TILE_SIZE, TILE_SIZE)
+        .setRotation(Phaser.Math.FloatBetween(-EXPLOSION_MAX_TILT, EXPLOSION_MAX_TILT))
+        .setDepth(DEPTH.explosion);
+      this.explosionSprites.set(key, sprite);
     }
     // One boom per frame no matter how many cells appeared (offline: event-driven).
     if (appeared && this.mode === 'online') audio.explosion();
@@ -489,7 +533,7 @@ export class GameScene extends Phaser.Scene {
   private reconcilePowerups(state: RenderState): void {
     const live = new Map(state.powerups.map((p) => [cellKey(p.col, p.row), TEX.powerup[p.type]]));
     for (const [key, entry] of this.powerupSprites) {
-      if (live.get(key) !== entry.texture) {
+      if (live.get(key) !== entry.ref) {
         // Online pickup sound: the powerup vanished under a living player
         // (burned/crushed powerups vanish with nobody standing there).
         if (this.mode === 'online') {
@@ -499,17 +543,25 @@ export class GameScene extends Phaser.Scene {
           );
           if (collected) audio.powerup();
         }
+        this.tweens.killTweensOf(entry.sprite);
         entry.sprite.destroy();
         this.powerupSprites.delete(key);
       }
     }
-    for (const [key, texture] of live) {
+    for (const [key, ref] of live) {
       if (this.powerupSprites.has(key)) continue;
       const [col, row] = key.split(',').map(Number);
-      this.powerupSprites.set(key, {
-        sprite: this.add.image(toX(col), toY(row), texture).setDepth(DEPTH.powerup),
-        texture,
+      const sprite = addImage(this, toX(col), toY(row), ref).setDepth(DEPTH.powerup);
+      sprite.setScale(SPRITE_SIZE.powerupHeight / sprite.height);
+      this.tweens.add({
+        targets: sprite,
+        y: sprite.y - POWERUP_BOB,
+        duration: 500,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
       });
+      this.powerupSprites.set(key, { sprite, ref });
     }
   }
 
@@ -587,26 +639,36 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0, 0)
       .setDepth(DEPTH.overlay);
 
-    let message: string;
-    if (winnerId === this.myId) message = 'You win!';
-    else if (winnerId === null) message = 'Draw';
-    else if (this.mode === 'online') {
-      const nickname = this.connection!.room.state.players.get(winnerId)?.nickname;
-      message = `${nickname ?? winnerId} wins!`;
-    } else message = 'You lose';
-
-    this.add
-      .text(cx, cy - 40, message, {
-        fontFamily: 'monospace',
-        fontSize: '48px',
-        color: '#ffffff',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5)
-      .setDepth(DEPTH.overlay);
+    if (winnerId === null) {
+      this.add
+        .text(cx, cy - 60, 'Draw', {
+          fontFamily: 'monospace',
+          fontSize: '48px',
+          color: '#ffffff',
+          fontStyle: 'bold',
+        })
+        .setOrigin(0.5)
+        .setDepth(DEPTH.overlay);
+    } else {
+      const won = winnerId === this.myId;
+      const ref = won ? TEX.youWin : TEX.youLose;
+      const banner = addImage(this, cx, cy - 100, ref).setDepth(DEPTH.overlay);
+      banner.setScale(SPRITE_SIZE.bannerWidth / banner.width);
+      if (!won && this.mode === 'online') {
+        const nickname = this.connection!.room.state.players.get(winnerId)?.nickname;
+        this.add
+          .text(cx, cy + 30, `${nickname ?? winnerId} wins!`, {
+            fontFamily: 'monospace',
+            fontSize: '28px',
+            color: '#ffffff',
+          })
+          .setOrigin(0.5)
+          .setDepth(DEPTH.overlay);
+      }
+    }
 
     const back = this.add
-      .text(cx, cy + 40, 'Back to menu', {
+      .text(cx, cy + 90, 'Back to menu', {
         fontFamily: 'monospace',
         fontSize: '28px',
         color: '#ffe040',
