@@ -14,6 +14,10 @@ COPY packages/server/package.json ./packages/server/
 # Dev deps are included on purpose: the server runs TypeScript via tsx.
 RUN npm ci --workspace @bomberman/shared --workspace @bomberman/server
 
+# The base tsconfig is required at runtime: each package's tsconfig extends it,
+# and tsx/esbuild silently discards a tsconfig whose `extends` target is missing
+# — which drops experimentalDecorators and makes Colyseus @type decorators crash.
+COPY tsconfig.base.json ./
 COPY packages/shared ./packages/shared
 COPY packages/server ./packages/server
 
