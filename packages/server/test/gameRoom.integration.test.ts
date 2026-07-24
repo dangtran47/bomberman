@@ -196,4 +196,27 @@ describe('create/join/start/move flow', () => {
       await guest.leave();
     }
   });
+
+  it('echoes ping payloads back to the sender and ignores non-numbers', async () => {
+    const host: AnyRoom = await new Client(wsUrl).create('game', { nickname: 'Pinger' });
+    try {
+      await until(() => host.state?.code?.length === 4, 3000, 'state ready');
+
+      let pong: number | null = null;
+      host.onMessage('pong', (t: number) => {
+        pong = t;
+      });
+      host.send('ping', 123456);
+      await until(() => pong === 123456, 3000, 'pong echoed');
+      expect(pong).toBe(123456);
+
+      // A non-number payload must not produce a reply.
+      pong = null;
+      host.send('ping', 'nope');
+      await new Promise((r) => setTimeout(r, 150));
+      expect(pong).toBeNull();
+    } finally {
+      await host.leave();
+    }
+  });
 });

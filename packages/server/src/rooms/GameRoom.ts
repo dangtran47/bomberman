@@ -44,6 +44,12 @@ export class GameRoom extends Room<RoomState> {
       if (playerId) this.inputBuffer.set(playerId, message);
     });
 
+    // Ping echo for client-side RTT measurement; replies only to the sender in
+    // any phase. The payload is the client's timestamp, bounced back untouched.
+    this.onMessage('ping', (client, t: unknown) => {
+      if (typeof t === 'number') client.send('pong', t);
+    });
+
     this.onMessage('toggleBots', (client) => {
       if (this.state.phase !== 'lobby' || !this.isHost(client)) return;
       this.state.fillBots = !this.state.fillBots;

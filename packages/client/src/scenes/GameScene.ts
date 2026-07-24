@@ -31,6 +31,8 @@ const MAX_STEPS_PER_FRAME = 5;
 const ONLINE_LERP = 0.35;
 /** Online: resend the current input this often even without changes. */
 const KEEPALIVE_MS = 100;
+/** Online: measure round-trip time by echoing a ping this often. */
+const PING_INTERVAL_MS = 2000;
 
 const DEPTH = {
   background: -1,
@@ -120,6 +122,10 @@ export class GameScene extends Phaser.Scene {
   private appliedShrunk = 0;
   private lastSentDirection: Direction | null = null;
   private keepaliveMs = 0;
+  /** Latest measured round-trip time (ms); null until the first pong arrives. */
+  private pingMs: number | null = null;
+  /** Accumulates toward the next ping send (online only). */
+  private pingTimerMs = 0;
   private roomClosed = false;
   private onRoomLeave = (): void => {
     this.roomClosed = true;
@@ -159,6 +165,8 @@ export class GameScene extends Phaser.Scene {
     this.appliedShrunk = 0;
     this.lastSentDirection = null;
     this.keepaliveMs = 0;
+    this.pingMs = null;
+    this.pingTimerMs = 0;
     this.roomClosed = false;
     this.suddenDeathWarned = false;
     this.prevAlive.clear();
@@ -186,6 +194,9 @@ export class GameScene extends Phaser.Scene {
       data.connection.room.onLeave(this.onRoomLeave);
       this.events.once('shutdown', () => {
         data.connection.room.onLeave.remove(this.onRoomLeave);
+      });
+      data.connection.room.onMessage('pong', (t: number) => {
+        this.pingMs = Math.max(0, Math.round(performance.now() - t));
       });
       initial = this.renderStateFromRoom();
     }
@@ -266,6 +277,13 @@ export class GameScene extends Phaser.Scene {
 
   private updateOnline(delta: number): void {
     const room = this.connection!.room;
+
+    // Ping: fire immediately on the first online tick, then every interval.
+    if (!this.roomClosed && (this.pingTimerMs <= 0 || this.pingTimerMs >= PING_INTERVAL_MS)) {
+      room.send('ping', performance.now());
+      this.pingTimerMs = 0;
+    }
+    this.pingTimerMs += delta;
 
     // Input: send on change, on bomb press, and periodically as keepalive.
     const direction = this.currentDirection();
@@ -575,7 +593,7 @@ export class GameScene extends Phaser.Scene {
     this.hudText = this.add
       .text(12, HUD_HEIGHT / 2, '', {
         fontFamily: 'monospace',
-        fontSize: '18px',
+        fontSize: '14px',
         color: '#ffffff',
       })
       .setOrigin(0, 0.5)
@@ -605,9 +623,11 @@ export class GameScene extends Phaser.Scene {
     const me = state.players.find((p) => p.id === this.myId);
     const aliveCount = state.players.filter((p) => p.alive).length;
     if (!me) return;
-    this.hudText.setText(
-      `Bombs: ${me.bombCount}   Blast: ${me.blastRadius}   Speed: ${me.speed.toFixed(1)}   Alive: ${aliveCount}`,
-    );
+    let line = `Bombs: ${me.bombCount}  Blast: ${me.blastRadius}  Speed: ${me.speed.toFixed(1)}  Alive: ${aliveCount}`;
+    if (this.mode === 'online') {
+      line += `  Ping: ${this.pingMs === null ? '--' : `${this.pingMs}ms`}`;
+    }
+    this.hudText.setText(line);
   }
 
   private updateSuddenDeathHud(tick: number): void {
