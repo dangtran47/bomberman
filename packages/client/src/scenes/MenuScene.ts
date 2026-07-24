@@ -122,16 +122,37 @@ export class MenuScene extends Phaser.Scene {
   private async connect(open: () => Promise<GameRoomConnection>): Promise<void> {
     if (this.busy) return;
     this.busy = true;
-    this.statusText.setColor('#999999').setText('Connecting...');
+    this.showLoading('Connecting...');
     try {
       const connection = await open();
       const lobbyData: LobbySceneData = { connection };
       this.scene.start('Lobby', lobbyData);
     } catch (error) {
       this.busy = false;
+      this.closeDialog();
       const message = error instanceof Error ? error.message : 'Connection failed';
       this.statusText.setColor('#ff6060').setText(message);
     }
+  }
+
+  /** Full-screen modal spinner shown while a room create/join is in flight. */
+  private showLoading(label: string): void {
+    const overlay = document.createElement('div');
+    overlay.style.cssText =
+      'position:fixed;inset:0;z-index:10;display:flex;flex-direction:column;' +
+      'align-items:center;justify-content:center;gap:16px;background:rgba(0,0,0,0.6);' +
+      'font-family:monospace;color:#ffe040;font-size:20px;';
+
+    const spinner = document.createElement('div');
+    spinner.style.cssText =
+      'width:48px;height:48px;border:5px solid #ffe040;border-top-color:transparent;' +
+      'border-radius:50%;animation:menu-spin 0.8s linear infinite;';
+
+    const text = document.createElement('div');
+    text.textContent = label;
+
+    overlay.append(spinner, text);
+    this.mountOverlay(overlay);
   }
 
   /**
@@ -139,8 +160,6 @@ export class MenuScene extends Phaser.Scene {
    * cannot take typed input). Enter submits, Escape cancels.
    */
   private openDialog(fields: DialogField[], onSubmit: (values: string[]) => void): void {
-    this.closeDialog();
-
     const dialog = document.createElement('div');
     dialog.style.cssText =
       'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);' +
@@ -198,13 +217,34 @@ export class MenuScene extends Phaser.Scene {
       event.stopPropagation(); // keep keystrokes away from Phaser
     });
 
-    document.body.appendChild(dialog);
+    this.mountOverlay(dialog);
     inputs[0]?.focus();
-    this.dialog = dialog;
+  }
+
+  /**
+   * Attaches an HTML overlay and disables Phaser's input so clicks on the
+   * overlay cannot bubble to the window listener and fire the menu buttons
+   * sitting underneath the canvas.
+   */
+  private mountOverlay(overlay: HTMLDivElement): void {
+    this.closeDialog();
+    this.ensureSpinnerStyle();
+    this.input.enabled = false;
+    document.body.appendChild(overlay);
+    this.dialog = overlay;
+  }
+
+  private ensureSpinnerStyle(): void {
+    if (document.getElementById('menu-spin-style')) return;
+    const style = document.createElement('style');
+    style.id = 'menu-spin-style';
+    style.textContent = '@keyframes menu-spin{to{transform:rotate(360deg)}}';
+    document.head.appendChild(style);
   }
 
   private closeDialog(): void {
     this.dialog?.remove();
     this.dialog = null;
+    this.input.enabled = true;
   }
 }

@@ -1,31 +1,33 @@
-# Fly.io config for the Bomberman Colyseus server.
-# Deploy from the REPO ROOT (the Docker build context needs the whole
-# workspace): fly deploy -c packages/server/fly.toml
-app = "bomberman-server" # change to your own app name (fly launch --no-deploy)
-primary_region = "sin" # pick a region close to your players
+# fly.toml app configuration file generated for bomberman-server-prd on 2026-07-24T09:48:52+07:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'bomberman-server-prd'
+primary_region = 'sin'
 
 [build]
-  dockerfile = "Dockerfile" # resolved relative to this file
+  dockerfile = 'Dockerfile'
 
 [env]
-  PORT = "8080"
+  PORT = '8080'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  # Scale to zero when idle: machines stop when no connections remain and
-  # start again on the next request, so an idle server costs ~nothing.
-  auto_stop_machines = "stop"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
 
   [[http_service.checks]]
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "10s"
-    method = "GET"
-    path = "/health"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/health'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "256mb"
+  size = 'shared-cpu-1x'
+  memory = '256mb'
+  cpus = 1
+  memory_mb = 256
