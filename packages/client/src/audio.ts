@@ -69,21 +69,7 @@ class GameAudio {
 
   /** ~300ms noise burst through a falling lowpass. */
   explosion(): void {
-    const ctx = this.ready();
-    if (!ctx) return;
-    const t0 = ctx.currentTime;
-    const source = ctx.createBufferSource();
-    source.buffer = this.noise(ctx);
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(1200, t0);
-    filter.frequency.exponentialRampToValueAtTime(120, t0 + 0.3);
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.3, t0);
-    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.3);
-    source.connect(filter).connect(gain).connect(ctx.destination);
-    source.start(t0);
-    source.stop(t0 + 0.3);
+    this.burst({ duration: 0.3, freq: 1200, endFreq: 120, gain: 0.3 });
   }
 
   /** Rising two-tone blip. */
@@ -102,6 +88,18 @@ class GameAudio {
     this.tone({ freq: 523, duration: 0.12, type: 'triangle', gain: 0.22 });
     this.tone({ freq: 659, duration: 0.12, type: 'triangle', gain: 0.22, delay: 0.13 });
     this.tone({ freq: 784, duration: 0.22, type: 'triangle', gain: 0.22, delay: 0.26 });
+  }
+
+  /** Gun shot: a short crack of noise over a fast descending square. */
+  gunShot(): void {
+    this.burst({ duration: 0.08, freq: 3000, endFreq: 500, gain: 0.22 });
+    this.tone({ freq: 900, endFreq: 160, duration: 0.09, type: 'square', gain: 0.16 });
+  }
+
+  /** Hammer impact: low sine thud plus a brief click of debris. */
+  hammerHit(): void {
+    this.tone({ freq: 180, endFreq: 45, duration: 0.18, type: 'sine', gain: 0.32 });
+    this.burst({ duration: 0.06, freq: 1800, endFreq: 300, gain: 0.12 });
   }
 
   /** Two-tone alarm, twice. */
@@ -158,7 +156,26 @@ class GameAudio {
     osc.stop(t0 + opts.duration + 0.01);
   }
 
-  /** Cached 0.3s white-noise buffer for the explosion burst. */
+  /** Noise through a lowpass sweeping freq -> endFreq, with a decaying gain. */
+  private burst(opts: { duration: number; freq: number; endFreq: number; gain: number }): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const t0 = ctx.currentTime;
+    const source = ctx.createBufferSource();
+    source.buffer = this.noise(ctx);
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(opts.freq, t0);
+    filter.frequency.exponentialRampToValueAtTime(opts.endFreq, t0 + opts.duration);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(opts.gain, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + opts.duration);
+    source.connect(filter).connect(gain).connect(ctx.destination);
+    source.start(t0);
+    source.stop(t0 + opts.duration);
+  }
+
+  /** Cached 0.3s white-noise buffer reused by every noise burst. */
   private noise(ctx: AudioContext): AudioBuffer {
     if (!this.noiseBuffer) {
       const length = Math.floor(ctx.sampleRate * 0.3);

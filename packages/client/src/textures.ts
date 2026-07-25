@@ -4,6 +4,13 @@ import { PowerupType } from '@bomberman/shared';
 /** Pixel size of one grid tile. */
 export const TILE_SIZE = 48;
 
+/**
+ * Text render resolution. The canvas is upscaled by Phaser.Scale.FIT on
+ * hi-DPI/large displays, so rendering text at 2-3x keeps it crisp instead of
+ * blurry. Every `add.text` style should set `resolution: TEXT_RES`.
+ */
+export const TEXT_RES = Math.min(3, Math.max(2, Math.ceil(window.devicePixelRatio || 1) + 1));
+
 /** Atlas page texture keys; each page is loaded from `assets/<key>.png`. */
 export const ATLAS_PAGES = [
   'gameplay',
@@ -11,6 +18,8 @@ export const ATLAS_PAGES = [
   'gameplay3',
   'gameplay4',
   'gameplay5',
+  'gameplay6',
+  'gameplay7',
 ] as const;
 
 /** URL of the libGDX atlas descriptor (served from public/assets). */
@@ -25,6 +34,13 @@ export interface TexRef {
 const G1 = 'gameplay';
 const G2 = 'gameplay2';
 const G3 = 'gameplay3';
+const G4 = 'gameplay4';
+const G5 = 'gameplay5';
+const G6 = 'gameplay6';
+const G7 = 'gameplay7';
+
+/** Tint applied to kick-related visuals (cyan). */
+export const KICK_TINT = 0x40e0ff;
 
 /**
  * Central registry of sprite references into the Bomb-It atlas. All scenes
@@ -39,6 +55,17 @@ export const TEX = {
     { key: G3, frame: 'player_blue' },
     { key: G3, frame: 'player_orange' },
     { key: G3, frame: 'player_black' },
+    { key: G3, frame: 'player_purple' },
+    { key: G5, frame: 'player_green' },
+  ],
+  /** Color swatch tiles for the lobby character picker, same order as players. */
+  characterTiles: [
+    { key: G2, frame: 'tile_pink' },
+    { key: G2, frame: 'tile_blue' },
+    { key: G2, frame: 'tile_orange' },
+    { key: G1, frame: 'tile_black' },
+    { key: G2, frame: 'tile_purple' },
+    { key: G2, frame: 'tile_green' },
   ],
   bomb: { key: G1, frame: 'bomb' },
   explosion: { key: G1, frame: 'pom_yellow' },
@@ -48,8 +75,41 @@ export const TEX = {
     [PowerupType.ExtraBomb]: { key: G1, frame: 'bonus_bomb' },
     [PowerupType.BiggerBlast]: { key: G1, frame: 'bonus_hand' },
     [PowerupType.Speed]: { key: G1, frame: 'whistle' },
+    [PowerupType.Kick]: { key: G6, frame: 'boots' },
+    [PowerupType.Gun]: { key: G7, frame: 'winter_gun' },
+    [PowerupType.Hammer]: { key: G7, frame: 'winter_hammer' },
   } as Record<PowerupType, TexRef>,
+  /**
+   * Winter theme. All blocks are flat 64x64 square tiles (no overhang):
+   * stretch to the 48px grid tile and draw soft/hard blocks directly on top
+   * of `winter.floor` — no depth sorting needed.
+   */
+  winter: {
+    floor: { key: G6, frame: 'winter_floor' },
+    floorAlt: { key: G6, frame: 'winter_floor2' },
+    /** Slippery tile art, drawn instead of the floor on `ice` cells. */
+    iceFloor: { key: G7, frame: 'winter_floor_ice' },
+    hardBlock: { key: G6, frame: 'winter_wall' },
+    /** Multi-tile prop art, keyed by MapProp.visual (house spans 3x3 tiles). */
+    house: { key: G7, frame: 'winter_house' },
+    /**
+     * Soft-block art keyed by the map legend's `visual` hint. Only art that
+     * reads clearly against the snow/ice floors belongs here: the atlas also
+     * ships `winter_block_snow` and `winter_block_ice_sparkle`, but those are
+     * pixel-for-pixel near-copies of `winter_floor` and `winter_floor_ice`, so
+     * using them makes walls indistinguishable from walkable lanes.
+     */
+    softByVisual: {
+      bottles: { key: G7, frame: 'winter_soft_bottles' },
+      cans: { key: G7, frame: 'winter_soft_cans' },
+      sled: { key: G7, frame: 'winter_soft_sled' },
+      window: { key: G7, frame: 'winter_soft_window' },
+      snowball: { key: G6, frame: 'winter_block_snowball' },
+      brick: { key: G6, frame: 'winter_block_brick' },
+    } as Record<string, TexRef>,
+  },
   background: { key: G2, frame: 'background' },
+  leaderboard: { key: G4, frame: 'background_leaderboard' },
   title: { key: G1, frame: 'title' },
   youWin: { key: G2, frame: 'you_win' },
   youLose: { key: G1, frame: 'you_lose' },

@@ -49,6 +49,10 @@ describe('createBot', () => {
       ownerId: 'p2',
       fuseTicks: BOMB_FUSE_TICKS,
       blastRadius: 2,
+      slideDC: 0,
+      slideDR: 0,
+      slideCooldown: 0,
+      slideInterval: 0,
     });
     player(game, 'p2').activeBombs = 1;
     const bot = createBot('bot', createRng(7));

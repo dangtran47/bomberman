@@ -1,6 +1,20 @@
 import { Room } from 'colyseus';
 import type { Client } from 'colyseus';
-import { GRID_WIDTH, SPAWN_POINTS, TICK_MS, createBot, createGame, createRng } from '@bomberman/shared';
+import type { Delayed } from '@colyseus/core';
+import {
+  BASE_BLAST_RADIUS,
+  BASE_BOMB_COUNT,
+  BASE_SPEED,
+  CHARACTER_COUNT,
+  GRID_WIDTH,
+  SPAWN_POINTS,
+  TICK_MS,
+  computePlacements,
+  createBot,
+  createGame,
+  createRng,
+  getMapDef,
+} from '@bomberman/shared';
 import type { Bot, Game } from '@bomberman/shared';
 import { registerRoomCode, releaseRoomCode } from '../roomCodes';
 import { InputBuffer } from './inputBuffer';
@@ -8,7 +22,7 @@ import { PlayerSchema, RoomState, copySimToSchema } from './schema';
 
 const MAX_PLAYERS = 4;
 const MAX_NICKNAME_LENGTH = 12;
-const POST_GAME_LINGER_MS = 30_000;
+const FINISHED_IDLE_MS = 180_000;
 
 /** FNV-1a hash of a string, folded to a uint32 — per-room deterministic seed. */
 export function hashSeed(input: string): number {
@@ -32,6 +46,7 @@ export class GameRoom extends Room<RoomState> {
   private readonly inputBuffer = new InputBuffer();
   private sim: Game | null = null;
   private bots: { id: string; bot: Bot }[] = [];
+  private teardownTimer: Delayed | null = null;
 
   onCreate(): void {
     this.state = new RoomState();
@@ -55,6 +70,31 @@ export class GameRoom extends Room<RoomState> {
       this.state.fillBots = !this.state.fillBots;
     });
 
+    this.onMessage('setMap', (client, message: unknown) => {
+      if (this.state.phase !== 'lobby' || !this.isHost(client)) return;
+      const id = (message as { mapId?: unknown })?.mapId;
+      if (typeof id !== 'string') return;
+      // '' is the classic procedural map; anything else must be a known map.
+      if (id !== '' && !getMapDef(id)) return;
+      this.state.mapId = id;
+    });
+
+    this.onMessage('pickCharacter', (client, message: unknown) => {
+      if (this.state.phase !== 'lobby') return;
+      const playerId = this.slots.get(client.sessionId);
+      if (!playerId) return;
+      const c = (message as { character?: unknown })?.character;
+      if (!Number.isInteger(c) || (c as number) < 0 || (c as number) >= CHARACTER_COUNT) return;
+      for (const [id, p] of this.state.players) {
+        if (id !== playerId && p.character === c) {
+          client.send('error', { message: 'Character already taken' });
+          return;
+        }
+      }
+      const me = this.state.players.get(playerId);
+      if (me) me.character = c as number;
+    });
+
     this.onMessage('start', (client) => {
       if (this.state.phase !== 'lobby') return;
       if (!this.isHost(client)) return;
@@ -64,7 +104,22 @@ export class GameRoom extends Room<RoomState> {
         client.send('error', { message: 'Need at least 2 players to start' });
         return;
       }
+      // Defensive: pickCharacter enforces uniqueness, but never start on a dupe.
+      const seen = new Set<number>();
+      for (const p of this.state.players.values()) {
+        if (p.isBot) continue;
+        if (seen.has(p.character)) {
+          client.send('error', { message: 'Two players have the same character' });
+          return;
+        }
+        seen.add(p.character);
+      }
       this.startGame();
+    });
+
+    this.onMessage('backToLobby', (client) => {
+      if (this.state.phase !== 'finished' || !this.isHost(client)) return;
+      this.returnToLobby();
     });
   }
 
@@ -79,6 +134,7 @@ export class GameRoom extends Room<RoomState> {
     player.nickname = sanitizeNickname(options?.nickname, slotIndex);
     player.x = SPAWN_POINTS[slotIndex].col;
     player.y = SPAWN_POINTS[slotIndex].row;
+    player.character = this.freeCharacter(); // before insert: don't count self
     this.state.players.set(playerId, player);
 
     if (this.state.hostId === '') this.state.hostId = playerId;
@@ -133,10 +189,14 @@ export class GameRoom extends Room<RoomState> {
       bot.isBot = true;
       bot.x = SPAWN_POINTS[slotIndex].col;
       bot.y = SPAWN_POINTS[slotIndex].row;
+      bot.character = this.freeCharacter(); // before insert so each bot picks distinctly
       this.state.players.set(id, bot);
     }
 
-    this.sim = createGame({ seed, playerIds });
+    // Fresh match: clear any lingering placements from a prior round.
+    for (const p of this.state.players.values()) p.placement = 0;
+
+    this.sim = createGame({ seed, playerIds, mapId: this.state.mapId });
     this.bots = botIds.map((id, i) => ({ id, bot: createBot(id, createRng(seed + i)) }));
 
     // Spawn corners are assigned by index in playerIds, which can differ from
@@ -171,16 +231,77 @@ export class GameRoom extends Room<RoomState> {
 
   private finishGame(winnerId: string | null): void {
     this.setSimulationInterval(undefined);
+    if (this.sim) {
+      const placements = computePlacements(this.sim.state.players);
+      for (const { id, placement } of placements) {
+        const ps = this.state.players.get(id);
+        if (ps) ps.placement = placement;
+      }
+    }
+    if (winnerId) {
+      const w = this.state.players.get(winnerId);
+      if (w) w.wins++;
+    }
     this.state.phase = 'finished';
     this.state.winnerId = winnerId ?? '';
-    // Let players linger on the results screen, then close up shop.
-    this.clock.setTimeout(() => void this.disconnect(), POST_GAME_LINGER_MS);
+    // Idle out the finished room only if nobody heads back to the lobby.
+    this.teardownTimer = this.clock.setTimeout(() => void this.disconnect(), FINISHED_IDLE_MS);
+  }
+
+  private returnToLobby(): void {
+    this.teardownTimer?.clear();
+    this.teardownTimer = null;
+    this.sim = null;
+    this.bots = [];
+    this.inputBuffer.clear();
+
+    const humanIds = new Set(this.slots.values());
+    for (const [id, ps] of [...this.state.players]) {
+      if (ps.isBot || !humanIds.has(id)) this.state.players.delete(id);
+    }
+    // Host may have quit mid-match; lobby succession never ran while finished.
+    if (!this.state.players.has(this.state.hostId)) {
+      const next = this.slots.values().next();
+      this.state.hostId = next.done ? '' : next.value;
+    }
+    for (const [id, ps] of this.state.players) {
+      const slotIndex = Number(id.slice(1));
+      ps.x = SPAWN_POINTS[slotIndex].col;
+      ps.y = SPAWN_POINTS[slotIndex].row;
+      ps.alive = true;
+      ps.bombCount = BASE_BOMB_COUNT;
+      ps.blastRadius = BASE_BLAST_RADIUS;
+      ps.speed = BASE_SPEED;
+      ps.activeBombs = 0;
+      ps.kickTicks = 0;
+      ps.gunAmmo = 0;
+      ps.hammerUses = 0;
+      ps.facing = 'down';
+      // keep character, wins, placement (placement shows last result until next match)
+    }
+    this.state.bombs.clear();
+    this.state.explosions.clear();
+    this.state.powerups.clear();
+    this.state.destroyedBlocks.clear();
+    this.state.arenaShrunk.clear();
+    this.state.winnerId = '';
+    this.state.tick = 0;
+    this.state.seed = 0;
+    this.state.phase = 'lobby';
+    void this.unlock();
   }
 
   // --- helpers ---
 
   private isHost(client: Client): boolean {
     return this.slots.get(client.sessionId) === this.state.hostId;
+  }
+
+  private freeCharacter(): number {
+    const taken = new Set<number>();
+    for (const p of this.state.players.values()) taken.add(p.character);
+    for (let i = 0; i < CHARACTER_COUNT; i++) if (!taken.has(i)) return i;
+    return 0; // all taken (impossible with CHARACTER_COUNT >= MAX_PLAYERS)
   }
 
   private freeSlot(): string {
