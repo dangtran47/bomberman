@@ -543,7 +543,8 @@ export class GameScene extends Phaser.Scene {
     if (warning) {
       badge.setTint(KICK_WARNING_TINT).setVisible(blinkOn);
     } else {
-      badge.setTint(KICK_TINT).setVisible(true);
+      badge.clearTint();
+      badge.setVisible(true);
     }
   }
 
@@ -651,7 +652,7 @@ export class GameScene extends Phaser.Scene {
 
   private reconcilePowerups(state: RenderState): void {
     const live = new Map(
-      state.powerups.map((p) => [cellKey(p.col, p.row), { ref: TEX.powerup[p.type], type: p.type }]),
+      state.powerups.map((p) => [cellKey(p.col, p.row), { ref: TEX.powerup[p.type] }]),
     );
     for (const [key, entry] of this.powerupSprites) {
       if (live.get(key)?.ref !== entry.ref) {
@@ -669,11 +670,10 @@ export class GameScene extends Phaser.Scene {
         this.powerupSprites.delete(key);
       }
     }
-    for (const [key, { ref, type }] of live) {
+    for (const [key, { ref }] of live) {
       if (this.powerupSprites.has(key)) continue;
       const [col, row] = key.split(',').map(Number);
       const sprite = addImage(this, toX(col), toY(row), ref).setDepth(DEPTH.powerup);
-      if (type === PowerupType.Kick) sprite.setTint(KICK_TINT);
       sprite.setScale(SPRITE_SIZE.powerupHeight / sprite.height);
       this.tweens.add({
         targets: sprite,

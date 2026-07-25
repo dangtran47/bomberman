@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { PowerupType } from '@bomberman/shared';
-import { KICK_TINT, TEX, TEXT_RES, addImage } from './textures';
+import { TEX, TEXT_RES, addImage } from './textures';
 
 /** One skill row: powerup type, name, and a one-line effect. */
 const SKILLS: { type: PowerupType; name: string; effect: string }[] = [
@@ -43,7 +43,6 @@ export function buildSkillsTable(
     const rowY = y + HEADER_GAP + i * ROW_HEIGHT;
     const icon = addImage(scene, x + ICON_SIZE / 2, rowY + ICON_SIZE / 2, TEX.powerup[skill.type]);
     icon.setScale(ICON_SIZE / icon.height);
-    if (skill.type === PowerupType.Kick) icon.setTint(KICK_TINT);
     objects.push(icon);
 
     objects.push(

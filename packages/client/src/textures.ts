@@ -73,28 +73,24 @@ export const TEX = {
     [PowerupType.ExtraBomb]: { key: G1, frame: 'bonus_bomb' },
     [PowerupType.BiggerBlast]: { key: G1, frame: 'bonus_hand' },
     [PowerupType.Speed]: { key: G1, frame: 'whistle' },
-    // Rendered tinted cyan (KICK_TINT) to read as the kick skill.
-    [PowerupType.Kick]: { key: G1, frame: 'bomb' },
+    [PowerupType.Kick]: { key: G6, frame: 'boots' },
   } as Record<PowerupType, TexRef>,
   /**
-   * Winter theme extracted from the Bomb-It ice level. Blocks are 62x80:
-   * a 62x62 opaque tile (snow floor baked in) plus an 18px transparent
-   * overhang; draw anchored to the tile bottom (origin y = 1) and depth-sort
-   * by row so overhangs overlap the cell above, on top of `winter.floor`.
+   * Winter theme. All blocks are flat 64x64 square tiles (no overhang):
+   * stretch to the 48px grid tile and draw soft/hard blocks directly on top
+   * of `winter.floor` — no depth sorting needed.
    */
   winter: {
     floor: { key: G6, frame: 'winter_floor' },
     floorAlt: { key: G6, frame: 'winter_floor2' },
     hardBlock: { key: G6, frame: 'winter_wall' },
     softBlocks: [
-      { key: G6, frame: 'winter_block_cans' },
-      { key: G6, frame: 'winter_block_sled' },
-      { key: G6, frame: 'winter_block_window' },
+      { key: G6, frame: 'winter_block_snow' },
       { key: G6, frame: 'winter_block_ice' },
+      { key: G6, frame: 'winter_block_ice_sparkle' },
+      { key: G6, frame: 'winter_block_brick' },
       { key: G6, frame: 'winter_block_snowball' },
     ],
-    /** 3x3-tile centerpiece decoration (186x204, 18px top overhang). */
-    lodge: { key: G6, frame: 'winter_lodge' },
   },
   background: { key: G2, frame: 'background' },
   leaderboard: { key: G4, frame: 'background_leaderboard' },
