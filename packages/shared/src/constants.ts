@@ -11,6 +11,9 @@ export const BASE_SPEED = 3; // tiles/sec
 export const SPEED_INCREMENT = 0.5;
 export const MAX_SPEED = 6;
 
+export const GRACE_CAP = 0.45; // max turn grace (tiles); below 0.5 so it never crosses to the next junction
+export const PING_CAP_MS = 400; // clamp reported ping before deriving turn grace
+
 export const BASE_BOMB_COUNT = 1;
 export const BASE_BLAST_RADIUS = 1; // tiles beyond bomb tile, cross shape
 export const MAX_BOMB_COUNT = 8;

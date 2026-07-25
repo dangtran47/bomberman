@@ -20,6 +20,7 @@ export interface PlayerInput {
   placeBomb: boolean;
   fireGun?: boolean; // optional: sources that never use the skills omit these
   swingHammer?: boolean;
+  pingMs?: number; // round-trip time reported by the client; absent for bots/offline
 }
 
 /** x/y are in tile units; a player standing on tile (c, r) has x=c, y=r, with floats during movement. */
@@ -43,6 +44,7 @@ export interface Player {
   momentumTicks: number; // remaining glide budget on ice
   turnTicks: number; // ticks spent fighting the current heading on ice
   laneDir: Direction | null; // direction that pulled the player off-lane; the corner slide follows it
+  turnGrace: number; // tiles of trailing-side latitude when committing a turn this tick; 0 offline
   deathTick: number | null; // null while alive/survivor
 }
 

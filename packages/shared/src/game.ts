@@ -204,6 +204,7 @@ class GameImpl implements Game {
         momentumTicks: 0,
         turnTicks: 0,
         laneDir: null,
+        turnGrace: 0,
         deathTick: null,
       })),
       bombs: [],
