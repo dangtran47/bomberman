@@ -40,7 +40,9 @@ interface SkillDef {
   chargesPerPickup: number;
   cooldownTicks: number;
   botAttackChance: number; // bot.ts reads this instead of BOT_GUN_ATTACK_CHANCE / BOT_HAMMER_ATTACK_CHANCE
-  onActivate(player: Player, ctx: SkillContext): void;
+  botAim: 'ray' | 'melee'; // bot aiming model (gun scans the facing line, hammer checks the adjacent tile)
+  /** Returns false when nothing happened; no charge or cooldown is spent then. */
+  onActivate(player: Player, ctx: SkillContext): boolean;
 }
 
 interface SkillContext {
@@ -53,7 +55,7 @@ interface SkillContext {
 
 `GameImpl` implements the capabilities; skills only compose them. Future weapons add capabilities (e.g. `spawnBomb`, `grabBomb`) without touching dispatch.
 
-A charge is spent on every activation, hit or miss — identical to current behavior.
+Charge accounting matches current behavior exactly: the gun spends a shot even when the ray leaves the grid, while a hammer swing aimed off-grid is a no-op that costs nothing. `onActivate` returning `false` signals "nothing happened" — no charge and no cooldown are consumed.
 
 ### 2. Player state and schema
 
@@ -88,9 +90,10 @@ Tick-loop dispatch becomes one generic path:
 const armed = player.skill !== null && player.skillCharges > 0;
 if ((input.useSkill || pressed) && armed && player.actionCooldown === 0) {
   const def = SKILLS.get(player.skill)!;
-  def.onActivate(player, ctx);
-  player.skillCharges--;
-  player.actionCooldown = def.cooldownTicks;
+  if (def.onActivate(player, ctx)) {
+    player.skillCharges--;
+    player.actionCooldown = def.cooldownTicks;
+  }
 }
 ```
 
