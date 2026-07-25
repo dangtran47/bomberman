@@ -94,6 +94,9 @@ const DEPTH = {
   effect: 900,
   hud: 1000,
   overlay: 2000,
+  /** Skills reference panel: above the results overlay so players can still
+   * open it to read up on power-ups after a match ends. */
+  skills: 3000,
 } as const;
 
 /**
@@ -1455,7 +1458,8 @@ export class GameScene extends Phaser.Scene {
     const helpButton = this.add
       .text(this.scale.width - 48, HUD_HEIGHT / 2, 'ℹ️', { fontSize: '18px', resolution: TEXT_RES })
       .setOrigin(1, 0.5)
-      .setDepth(DEPTH.hud)
+      // Above the results overlay: players can still open the skills panel post-match.
+      .setDepth(DEPTH.skills)
       .setInteractive({ useHandCursor: true });
     helpButton.on('pointerdown', () => this.toggleSkillsPanel());
     this.events.once('shutdown', () => this.destroySkillsPanel());
@@ -1512,16 +1516,16 @@ export class GameScene extends Phaser.Scene {
   }
 
   private buildSkillsPanel(): void {
-    const width = 540;
-    const height = 205; // header + 6 skill rows
+    const width = 600;
+    const height = 236; // header + 6 skill rows + controls footer, with margin
     const cx = this.scale.width / 2;
     const cy = this.scale.height / 2;
     const panel = this.add
       .rectangle(cx, cy, width, height, 0x11121c, 0.98)
       .setStrokeStyle(2, 0xffe040)
-      .setDepth(DEPTH.overlay);
+      .setDepth(DEPTH.skills);
     const rows = buildSkillsTable(this, cx - width / 2 + 16, cy - height / 2 + 14);
-    for (const o of rows) (o as Phaser.GameObjects.Image).setDepth(DEPTH.overlay + 1);
+    for (const o of rows) (o as Phaser.GameObjects.Image).setDepth(DEPTH.skills + 1);
     this.skillsPanel = [panel, ...rows];
     for (const o of this.skillsPanel) (o as Phaser.GameObjects.Image).setVisible(false);
   }
@@ -1647,9 +1651,16 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0, 0)
       .setDepth(DEPTH.overlay);
 
-    const panel = addImage(this, cx, cy, TEX.leaderboard).setDepth(DEPTH.overlay);
-    panel.setScale(460 / panel.width);
-    const panelTop = cy - (panel.displayHeight / 2);
+    // Win/lose banner sits above the standings, which float on the full-screen
+    // dim (no boxed panel). Layout is anchored to a fixed content height.
+    const won = room.state.winnerId === this.myId;
+    const banner = addImage(this, cx, cy, won ? TEX.youWin : TEX.youLose).setDepth(DEPTH.overlay + 1);
+    banner.setScale(300 / banner.width);
+
+    const panelHeight = 340;
+    const panelCenterY = cy + banner.displayHeight / 2;
+    const panelTop = panelCenterY - panelHeight / 2;
+    banner.setY(panelTop - 8 - banner.displayHeight / 2);
 
     this.add
       .text(cx, panelTop + 28, 'RESULTS', {
