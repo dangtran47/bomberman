@@ -32,8 +32,8 @@ export function kickSlideInterval(speed: number): number {
 }
 
 /** Ice drift: how long a released heading keeps gliding, and how it decays. */
-export const ICE_GLIDE_TICKS = 8;
-export const ICE_GLIDE_SPEED_MULT = 0.75;
+export const ICE_GLIDE_TICKS = 12;
+export const ICE_GLIDE_SPEED_MULT = 1;
 /** Ticks of the old heading before a turn takes effect on ice. */
 export const ICE_TURN_DELAY_TICKS = 3;
 

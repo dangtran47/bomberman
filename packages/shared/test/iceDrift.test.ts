@@ -111,11 +111,13 @@ describe('ice turn delay', () => {
     }
 
     const beforeX = p1.x;
+    const lane = Math.round(beforeX);
     run(g, 1, { p1: move('up') });
     expect(p1.momentumDir).toBe('up'); // heading finally switches
     expect(p1.turnTicks).toBe(0);
     expect(p1.facing).toBe('up');
-    expect(p1.x).toBeLessThan(beforeX); // sliding back onto the vertical lane
+    // Sliding onto the nearest vertical lane before it can travel up.
+    expect(Math.abs(p1.x - lane)).toBeLessThan(Math.abs(beforeX - lane));
   });
 
   it('turns immediately off ice', () => {
