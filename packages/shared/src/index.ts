@@ -2,6 +2,7 @@ export * from './constants';
 export * from './types';
 export * from './rng';
 export * from './map';
+export * from './maps';
 export * from './suddenDeath';
 export * from './game';
 export * from './ranking';

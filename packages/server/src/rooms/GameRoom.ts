@@ -13,6 +13,7 @@ import {
   createBot,
   createGame,
   createRng,
+  getMapDef,
 } from '@bomberman/shared';
 import type { Bot, Game } from '@bomberman/shared';
 import { registerRoomCode, releaseRoomCode } from '../roomCodes';
@@ -67,6 +68,15 @@ export class GameRoom extends Room<RoomState> {
     this.onMessage('toggleBots', (client) => {
       if (this.state.phase !== 'lobby' || !this.isHost(client)) return;
       this.state.fillBots = !this.state.fillBots;
+    });
+
+    this.onMessage('setMap', (client, message: unknown) => {
+      if (this.state.phase !== 'lobby' || !this.isHost(client)) return;
+      const id = (message as { mapId?: unknown })?.mapId;
+      if (typeof id !== 'string') return;
+      // '' is the classic procedural map; anything else must be a known map.
+      if (id !== '' && !getMapDef(id)) return;
+      this.state.mapId = id;
     });
 
     this.onMessage('pickCharacter', (client, message: unknown) => {
@@ -186,7 +196,7 @@ export class GameRoom extends Room<RoomState> {
     // Fresh match: clear any lingering placements from a prior round.
     for (const p of this.state.players.values()) p.placement = 0;
 
-    this.sim = createGame({ seed, playerIds });
+    this.sim = createGame({ seed, playerIds, mapId: this.state.mapId });
     this.bots = botIds.map((id, i) => ({ id, bot: createBot(id, createRng(seed + i)) }));
 
     // Spawn corners are assigned by index in playerIds, which can differ from
@@ -264,6 +274,9 @@ export class GameRoom extends Room<RoomState> {
       ps.speed = BASE_SPEED;
       ps.activeBombs = 0;
       ps.kickTicks = 0;
+      ps.gunAmmo = 0;
+      ps.hammerUses = 0;
+      ps.facing = 'down';
       // keep character, wins, placement (placement shows last result until next match)
     }
     this.state.bombs.clear();

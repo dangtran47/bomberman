@@ -300,3 +300,65 @@ boots
   orig: 66, 64
   offset: 0, 0
   index: -1
+
+gameplay7.png
+size: 512, 256
+format: RGBA8888
+filter: Nearest, Nearest
+repeat: none
+winter_house
+  rotate: false
+  xy: 2, 2
+  size: 192, 192
+  orig: 192, 192
+  offset: 0, 0
+  index: -1
+winter_soft_bottles
+  rotate: false
+  xy: 196, 2
+  size: 64, 64
+  orig: 64, 64
+  offset: 0, 0
+  index: -1
+winter_soft_cans
+  rotate: false
+  xy: 262, 2
+  size: 64, 64
+  orig: 64, 64
+  offset: 0, 0
+  index: -1
+winter_soft_sled
+  rotate: false
+  xy: 328, 2
+  size: 64, 64
+  orig: 64, 64
+  offset: 0, 0
+  index: -1
+winter_soft_window
+  rotate: false
+  xy: 394, 2
+  size: 64, 64
+  orig: 64, 64
+  offset: 0, 0
+  index: -1
+winter_floor_ice
+  rotate: false
+  xy: 196, 68
+  size: 64, 64
+  orig: 64, 64
+  offset: 0, 0
+  index: -1
+winter_gun
+  rotate: false
+  xy: 262, 68
+  size: 64, 64
+  orig: 64, 64
+  offset: 0, 0
+  index: -1
+winter_hammer
+  rotate: false
+  xy: 328, 68
+  size: 64, 64
+  orig: 64, 64
+  offset: 0, 0
+  index: -1

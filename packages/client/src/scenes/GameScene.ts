@@ -7,15 +7,26 @@ import {
   SUDDEN_DEATH_START_TICKS,
   TICK_MS,
   TICK_RATE,
+  MAPS,
   TileType,
+  compileMap,
   computePlacements,
   createBot,
   createGame,
   createRng,
   generateMap,
+  getMapDef,
 } from '@bomberman/shared';
-import type { Bot, Direction, Game, GameEvent, PlayerInput } from '@bomberman/shared';
+import type {
+  Bot,
+  CompiledMap,
+  Direction,
+  Game,
+  GameEvent,
+  PlayerInput,
+} from '@bomberman/shared';
 import { audio } from '../audio';
+import { GUN_KEY, HAMMER_KEY, SKILL_KEY_LABEL } from '../controls';
 import type { GameRoomConnection, NetRoomState } from '../net';
 import { KICK_TINT, SPRITE_SIZE, TEX, TEXT_RES, TILE_SIZE, addImage } from '../textures';
 import type { TexRef } from '../textures';
@@ -23,7 +34,7 @@ import { buildSkillsTable } from '../skillsTable';
 import type { LobbySceneData } from './LobbyScene';
 
 export type GameSceneData =
-  | { mode: 'offline'; seed: number }
+  | { mode: 'offline'; seed: number; mapId?: string }
   | { mode: 'online'; connection: GameRoomConnection };
 
 export const HUD_HEIGHT = 40;
@@ -64,8 +75,36 @@ const EXPLOSION_MAX_TILT = 0.3;
 const POWERUP_BOB = 4;
 /** Tint for kick visuals in the final warning window (about to expire). */
 const KICK_WARNING_TINT = 0xff4040;
-/** On-screen height (px) of the overhead kick badge. */
-const KICK_BADGE_HEIGHT = 22;
+/** On-screen height (px) of one overhead skill badge, and the row's pitch. */
+const SKILL_BADGE_HEIGHT = 22;
+const SKILL_BADGE_STEP = 20;
+/** Gun tracer: color, thickness and fade time of the shot line. */
+const TRACER_COLOR = 0xffe040;
+const TRACER_WIDTH = 3;
+const TRACER_FADE_MS = 180;
+/** Tile flash (sudden death, hammer impact) fade time. */
+const TILE_FLASH_MS = 250;
+
+/** Overhead badges, in draw order; `value` reads the synced count off a player. */
+const SKILL_BADGES: {
+  key: string;
+  type: PowerupType;
+  value: (p: RenderPlayer) => number;
+  /** Timers (kick) show no number; consumable counts do. */
+  showCount: boolean;
+}[] = [
+  { key: 'kick', type: PowerupType.Kick, value: (p) => p.kickTicks, showCount: false },
+  { key: 'gun', type: PowerupType.Gun, value: (p) => p.gunAmmo, showCount: true },
+  { key: 'hammer', type: PowerupType.Hammer, value: (p) => p.hammerUses, showCount: true },
+];
+
+/** Grid delta per facing direction (mirrors the sim's step table). */
+const DIR_STEP: Record<Direction, [dc: number, dr: number]> = {
+  up: [0, -1],
+  down: [0, 1],
+  left: [-1, 0],
+  right: [1, 0],
+};
 
 /** Key codes mapped to a direction (arrows + WASD). */
 const DIRECTION_KEYS: [key: string, dir: Direction][] = [
@@ -98,6 +137,15 @@ export interface RenderPlayer {
   blastRadius: number;
   activeBombs: number;
   kickTicks: number;
+  gunAmmo: number;
+  hammerUses: number;
+  facing: Direction;
+}
+
+/** One overhead skill icon (plus its count label for consumable skills). */
+interface SkillBadge {
+  icon: Phaser.GameObjects.Image;
+  count: Phaser.GameObjects.Text | null;
 }
 
 export interface RenderState {
@@ -117,6 +165,12 @@ export interface RenderState {
 export class GameScene extends Phaser.Scene {
   private mode: 'offline' | 'online' = 'offline';
   private myId = HUMAN_ID;
+
+  /** Chosen arena; '' = classic procedural (kept for the "play again" restart). */
+  private mapId = '';
+  /** Compiled registry map (ice/visuals/props) — null on the classic map. */
+  private compiled: CompiledMap | null = null;
+  private theme: 'classic' | 'winter' = 'classic';
 
   // offline
   private sim: Game | null = null; // named to avoid Phaser.Scene#game
@@ -153,12 +207,25 @@ export class GameScene extends Phaser.Scene {
 
   private directionKeys: [Phaser.Input.Keyboard.Key, Direction][] = [];
   private spaceKey!: Phaser.Input.Keyboard.Key;
+  private gunKey!: Phaser.Input.Keyboard.Key;
+  private hammerKey!: Phaser.Input.Keyboard.Key;
+  /**
+   * Latched skill presses. A frame can run zero sim steps (or skip an input
+   * send), so an edge-triggered key is held here until it is consumed.
+   */
+  private pendingGun = false;
+  private pendingHammer = false;
+  /** Online: latched Space press, routed to whichever skill is held. */
+  private pendingTrigger = false;
 
   private playerSprites = new Map<string, Phaser.GameObjects.Image>();
-  /** Overhead kick indicator per player (created while kickTicks > 0). */
-  private kickBadges = new Map<string, Phaser.GameObjects.Image>();
-  /** Previous-frame kickTicks per player, to detect a 0 -> >0 pickup. */
-  private prevKickTicks = new Map<string, number>();
+  /** Overhead skill icons per player, keyed by SKILL_BADGES entry. */
+  private skillBadges = new Map<string, Map<string, SkillBadge>>();
+  /** Previous-frame badge values per player, to detect a 0 -> >0 pickup. */
+  private prevSkillValues = new Map<string, Map<string, number>>();
+  /** Online: last-seen gun/hammer counts, to derive skill FX from state diffs. */
+  private prevGunAmmo = new Map<string, number>();
+  private prevHammerUses = new Map<string, number>();
   private softBlockSprites = new Map<string, Phaser.GameObjects.Image>();
   private bombSprites = new Map<number, { sprite: Phaser.GameObjects.Image; col: number; row: number }>();
   private explosionSprites = new Map<string, Phaser.GameObjects.Image>();
@@ -190,10 +257,15 @@ export class GameScene extends Phaser.Scene {
     this.pingTimerMs = 0;
     this.roomClosed = false;
     this.suddenDeathWarned = false;
+    this.pendingGun = false;
+    this.pendingHammer = false;
+    this.pendingTrigger = false;
     this.prevAlive.clear();
+    this.prevGunAmmo.clear();
+    this.prevHammerUses.clear();
     this.playerSprites.clear();
-    this.kickBadges.clear();
-    this.prevKickTicks.clear();
+    this.skillBadges.clear();
+    this.prevSkillValues.clear();
     this.softBlockSprites.clear();
     this.bombSprites.clear();
     this.explosionSprites.clear();
@@ -208,7 +280,8 @@ export class GameScene extends Phaser.Scene {
       this.myId = HUMAN_ID;
       this.connection = null;
       this.grid = null;
-      this.sim = createGame({ seed: data.seed, playerIds: PLAYER_IDS });
+      this.resolveMap(data.mapId ?? '', data.seed);
+      this.sim = createGame({ seed: data.seed, playerIds: PLAYER_IDS, mapId: this.mapId });
       this.bots = PLAYER_IDS.slice(1).map((id, i) => createBot(id, createRng(data.seed + i + 1)));
       // Offline: character = slot number (intentional; no picker offline).
       for (const id of PLAYER_IDS) this.characterByPlayer.set(id, Number(id.slice(1)));
@@ -218,7 +291,11 @@ export class GameScene extends Phaser.Scene {
       this.myId = data.connection.playerId;
       this.sim = null;
       this.bots = [];
-      this.grid = generateMap(data.connection.room.state.seed);
+      // The server never syncs the grid: it is recompiled here from the same
+      // (mapId, seed) pair, then patched by the destroyedBlocks deltas.
+      const seed = data.connection.room.state.seed;
+      this.resolveMap(data.connection.room.state.mapId, seed);
+      this.grid = this.compiled ? this.compiled.grid.map((row) => [...row]) : generateMap(seed);
       data.connection.room.state.players.forEach((p, id) =>
         this.characterByPlayer.set(id, p.character),
       );
@@ -241,6 +318,30 @@ export class GameScene extends Phaser.Scene {
     this.positionPlayers(initial, 1);
   }
 
+  /**
+   * Resolves the arena once per match. An unknown or empty id leaves the scene
+   * on the classic procedural path (compiled === null), byte-identical to
+   * before maps existed.
+   */
+  private resolveMap(mapId: string, seed: number): void {
+    const def = getMapDef(mapId);
+    this.mapId = def ? mapId : '';
+    this.compiled = def ? compileMap(def, seed) : null;
+    this.theme = def?.theme ?? 'classic';
+    // TEMP DEBUG (remove): why does winter render classic?
+    console.log('[MAPDBG] resolveMap', {
+      requested: mapId,
+      resolved: this.mapId,
+      theme: this.theme,
+      compiled: this.compiled !== null,
+      floorFrame: this.floorRef(1, 1),
+      winterFloorFrame: this.textures.exists('gameplay6')
+        ? this.textures.get('gameplay6').has('winter_floor')
+        : 'page-missing',
+      registryKeys: Object.keys(MAPS),
+    });
+  }
+
   update(_time: number, delta: number): void {
     if (this.gameOver) return;
     if (this.mode === 'offline') this.updateOffline(delta);
@@ -250,6 +351,7 @@ export class GameScene extends Phaser.Scene {
   // --- offline: local simulation ---
 
   private updateOffline(delta: number): void {
+    this.pollSkillKeys();
     this.accumulator += delta;
     let steps = 0;
     while (this.accumulator >= TICK_MS && steps < MAX_STEPS_PER_FRAME) {
@@ -267,8 +369,16 @@ export class GameScene extends Phaser.Scene {
     const state = this.sim!.state;
     const inputs: Record<string, PlayerInput> = {
       // Holding Space keeps placing; the sim self-limits via bomb caps + per-tile.
-      [HUMAN_ID]: { direction: this.currentDirection(), placeBomb: this.spaceKey.isDown },
+      // Gun/hammer are one-shot: the latch is cleared as this tick consumes it.
+      [HUMAN_ID]: {
+        direction: this.currentDirection(),
+        placeBomb: this.spaceKey.isDown,
+        fireGun: this.pendingGun,
+        swingHammer: this.pendingHammer,
+      },
     };
+    this.pendingGun = false;
+    this.pendingHammer = false;
     for (const [i, bot] of this.bots.entries()) {
       inputs[PLAYER_IDS[i + 1]] = bot.computeInput(state);
     }
@@ -293,6 +403,14 @@ export class GameScene extends Phaser.Scene {
       case 'playerDied':
         audio.death();
         break;
+      case 'gunFired':
+        audio.gunShot();
+        this.showTracer(event.col, event.row, event.dir, event.hitCol, event.hitRow);
+        break;
+      case 'hammerSwung':
+        audio.hammerHit();
+        this.flashTile(event.col, event.row, TRACER_COLOR);
+        break;
       case 'arenaShrink':
         this.showShrunkTile(event.col, event.row);
         break;
@@ -314,19 +432,40 @@ export class GameScene extends Phaser.Scene {
     }
     this.pingTimerMs += delta;
 
-    // Input: send on change, on bomb-held change, and periodically as keepalive.
-    // Holding Space resends `true` each keepalive so the server keeps dropping
-    // bombs as fast as its caps allow; release sends `false` promptly.
+    // Input: send on change, on bomb-held change, on a latched skill press, and
+    // periodically as keepalive. Holding Space resends `true` each keepalive so
+    // the server keeps dropping bombs as fast as its caps allow; release sends
+    // `false` promptly. A skill flag goes out on the very next send and is then
+    // cleared — the server sticky-ORs it, so a later `false` keepalive is harmless.
+    //
+    // While a skill is held, Space is the skill trigger instead: it goes out as
+    // an edge-latched skill flag and never as `placeBomb`. The server's buffer
+    // clears `placeBomb` every tick, so a held Space arrives as a fresh press on
+    // each keepalive — which would empty the magazine in a fraction of a second.
+    this.pollSkillKeys();
     const direction = this.currentDirection();
-    const bombHeld = this.spaceKey.isDown;
+    const armed = this.myArmedSkill();
+    if (armed === 'gun' && this.pendingTrigger) this.pendingGun = true;
+    if (armed === 'hammer' && this.pendingTrigger) this.pendingHammer = true;
+    this.pendingTrigger = false;
+    const bombHeld = armed === null && this.spaceKey.isDown;
     this.keepaliveMs += delta;
     if (
       !this.roomClosed &&
       (direction !== this.lastSentDirection ||
         bombHeld !== this.lastSentBomb ||
+        this.pendingGun ||
+        this.pendingHammer ||
         this.keepaliveMs >= KEEPALIVE_MS)
     ) {
-      room.send('input', { direction, placeBomb: bombHeld });
+      room.send('input', {
+        direction,
+        placeBomb: bombHeld,
+        fireGun: this.pendingGun,
+        swingHammer: this.pendingHammer,
+      });
+      this.pendingGun = false;
+      this.pendingHammer = false;
       this.lastSentDirection = direction;
       this.lastSentBomb = bombHeld;
       this.keepaliveMs = 0;
@@ -335,6 +474,7 @@ export class GameScene extends Phaser.Scene {
     const state = this.renderStateFromRoom();
     this.reconcile(state);
     this.trackOnlineDeaths(state);
+    this.trackOnlineSkillUse(state);
     this.updateHud(state);
     this.positionPlayers(state, ONLINE_LERP);
 
@@ -361,6 +501,9 @@ export class GameScene extends Phaser.Scene {
         blastRadius: p.blastRadius,
         activeBombs: p.activeBombs,
         kickTicks: p.kickTicks,
+        gunAmmo: p.gunAmmo,
+        hammerUses: p.hammerUses,
+        facing: p.facing,
       }),
     );
     players.sort((a, b) => a.id.localeCompare(b.id));
@@ -408,12 +551,86 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * Online: gun/hammer FX derive from a drop in the synced counts. The tracer
+   * end is re-scanned locally (the shot itself is not synced), so a shot that
+   * broke a block draws one tile long — close enough for a 180ms flash.
+   */
+  private trackOnlineSkillUse(state: RenderState): void {
+    for (const player of state.players) {
+      const col = Math.round(player.x);
+      const row = Math.round(player.y);
+
+      const prevGun = this.prevGunAmmo.get(player.id);
+      if (prevGun !== undefined && player.gunAmmo < prevGun) {
+        audio.gunShot();
+        const [hitCol, hitRow] = this.scanRay(state, col, row, player.facing, player.id);
+        this.showTracer(col, row, player.facing, hitCol, hitRow);
+      }
+      this.prevGunAmmo.set(player.id, player.gunAmmo);
+
+      const prevHammer = this.prevHammerUses.get(player.id);
+      if (prevHammer !== undefined && player.hammerUses < prevHammer) {
+        audio.hammerHit();
+        const [dc, dr] = DIR_STEP[player.facing];
+        this.flashTile(col + dc, row + dr, TRACER_COLOR);
+      }
+      this.prevHammerUses.set(player.id, player.hammerUses);
+    }
+  }
+
+  /** First blocking cell along `dir` (block or other player); null if it leaves the grid. */
+  private scanRay(
+    state: RenderState,
+    col: number,
+    row: number,
+    dir: Direction,
+    shooterId: string,
+  ): [col: number | null, row: number | null] {
+    const [dc, dr] = DIR_STEP[dir];
+    for (let step = 1; ; step++) {
+      const c = col + dc * step;
+      const r = row + dr * step;
+      if (c < 0 || c >= GRID_WIDTH || r < 0 || r >= GRID_HEIGHT) return [null, null];
+      if (state.grid[r][c] !== TileType.Floor) return [c, r];
+      const hitPlayer = state.players.some(
+        (p) => p.alive && p.id !== shooterId && Math.round(p.x) === c && Math.round(p.y) === r,
+      );
+      if (hitPlayer) return [c, r];
+    }
+  }
+
   // --- input ---
 
   private setupInput(): void {
     const keyboard = this.input.keyboard!;
     this.directionKeys = DIRECTION_KEYS.map(([key, dir]) => [keyboard.addKey(key), dir]);
     this.spaceKey = keyboard.addKey('SPACE');
+    this.gunKey = keyboard.addKey(GUN_KEY);
+    this.hammerKey = keyboard.addKey(HAMMER_KEY);
+  }
+
+  /**
+   * Latches this frame's skill key presses. JustDown consumes the edge, so it
+   * must be polled exactly once per frame regardless of how many sim steps or
+   * input sends follow.
+   */
+  private pollSkillKeys(): void {
+    if (Phaser.Input.Keyboard.JustDown(this.gunKey)) this.pendingGun = true;
+    if (Phaser.Input.Keyboard.JustDown(this.hammerKey)) this.pendingHammer = true;
+    if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.pendingTrigger = true;
+  }
+
+  /**
+   * Which skill Space triggers right now, or null when it still places bombs.
+   * Online only: offline the sim reads the held key and edges it itself.
+   */
+  private myArmedSkill(): 'gun' | 'hammer' | null {
+    const me = this.connection?.room.state.players.get(this.myId);
+    if (!me) return null;
+    if (me.gunAmmo > 0) return 'gun';
+    if (me.hammerUses > 0) return 'hammer';
+    return null;
   }
 
   /** Last-pressed-wins: among held direction keys, the most recent one. */
@@ -437,20 +654,57 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0, 0)
       .setDisplaySize(this.scale.width, GRID_HEIGHT * TILE_SIZE)
       .setDepth(DEPTH.background);
+
+    // Prop footprints are drawn as one sprite, so their per-cell wall art is skipped.
+    const propCells = new Set<string>();
+    for (const prop of this.compiled?.props ?? []) {
+      for (let row = prop.row; row < prop.row + prop.rows; row++) {
+        for (let col = prop.col; col < prop.col + prop.cols; col++) propCells.add(cellKey(col, row));
+      }
+    }
+
     for (let row = 0; row < GRID_HEIGHT; row++) {
       for (let col = 0; col < GRID_WIDTH; col++) {
-        addImage(this, toX(col), toY(row), TEX.floor)
+        addImage(this, toX(col), toY(row), this.floorRef(col, row))
           .setDisplaySize(TILE_SIZE, TILE_SIZE)
           .setDepth(DEPTH.floor);
-        if (state.grid[row][col] === TileType.HardBlock) {
+        if (state.grid[row][col] === TileType.HardBlock && !propCells.has(cellKey(col, row))) {
           this.addHardBlock(col, row);
         }
       }
     }
+
+    for (const prop of this.compiled?.props ?? []) {
+      const ref = TEX.winter.house; // only prop art so far; keyed by visual once there are more
+      addImage(
+        this,
+        toX(prop.col + (prop.cols - 1) / 2),
+        toY(prop.row + (prop.rows - 1) / 2),
+        ref,
+      )
+        .setDisplaySize(prop.cols * TILE_SIZE, prop.rows * TILE_SIZE)
+        .setDepth(DEPTH.block);
+    }
   }
 
-  /** Traffic-cone hard block, scaled by height and centered on the tile. */
+  /** Floor art for one cell: themed ice/alt variants, or the classic tile. */
+  private floorRef(col: number, row: number): TexRef {
+    if (this.theme !== 'winter') return TEX.floor;
+    if (this.compiled?.ice[row][col]) return TEX.winter.iceFloor;
+    // Checkerboard the two plain variants so the sheet ice reads as a rink.
+    return (col + row) % 2 === 0 ? TEX.winter.floor : TEX.winter.floorAlt;
+  }
+
+  /**
+   * Hard block: classic traffic cone (scaled by height, centered on the tile)
+   * or the flat winter wall stretched over the whole tile.
+   */
   private addHardBlock(col: number, row: number): Phaser.GameObjects.Image {
+    if (this.theme === 'winter') {
+      return addImage(this, toX(col), toY(row), TEX.winter.hardBlock)
+        .setDisplaySize(TILE_SIZE, TILE_SIZE)
+        .setDepth(DEPTH.block);
+    }
     const img = addImage(this, toX(col), toY(row), TEX.hardBlock).setDepth(DEPTH.block);
     return img.setScale(SPRITE_SIZE.hardBlockHeight / img.height);
   }
@@ -458,15 +712,50 @@ export class GameScene extends Phaser.Scene {
   /** Renders a sudden-death conversion: permanent hard block + brief flash. */
   private showShrunkTile(col: number, row: number): void {
     this.addHardBlock(col, row);
+    this.flashTile(col, row, 0xffffff);
+  }
+
+  /** Brief full-tile flash (sudden-death conversion, hammer impact). */
+  private flashTile(col: number, row: number, color: number): void {
+    if (col < 0 || col >= GRID_WIDTH || row < 0 || row >= GRID_HEIGHT) return;
     const flash = this.add
-      .rectangle(toX(col), toY(row), TILE_SIZE, TILE_SIZE, 0xffffff, 0.8)
+      .rectangle(toX(col), toY(row), TILE_SIZE, TILE_SIZE, color, 0.8)
       .setDepth(DEPTH.explosion);
     this.tweens.add({
       targets: flash,
       alpha: 0,
-      duration: 250,
+      duration: TILE_FLASH_MS,
       onComplete: () => flash.destroy(),
     });
+  }
+
+  /**
+   * Gun tracer: a fading line from the shooter's tile to the cell the ray
+   * stopped on, plus a flash there. A null hit means the shot left the grid,
+   * so the line runs to the far edge.
+   */
+  private showTracer(
+    col: number,
+    row: number,
+    dir: Direction,
+    hitCol: number | null,
+    hitRow: number | null,
+  ): void {
+    const [dc, dr] = DIR_STEP[dir];
+    const endCol = hitCol ?? (dc > 0 ? GRID_WIDTH - 1 : dc < 0 ? 0 : col);
+    const endRow = hitRow ?? (dr > 0 ? GRID_HEIGHT - 1 : dr < 0 ? 0 : row);
+    const tracer = this.add
+      .line(0, 0, toX(col), toY(row), toX(endCol), toY(endRow), TRACER_COLOR)
+      .setOrigin(0, 0)
+      .setLineWidth(TRACER_WIDTH)
+      .setDepth(DEPTH.explosion);
+    this.tweens.add({
+      targets: tracer,
+      alpha: 0,
+      duration: TRACER_FADE_MS,
+      onComplete: () => tracer.destroy(),
+    });
+    if (hitCol !== null && hitRow !== null) this.flashTile(hitCol, hitRow, TRACER_COLOR);
   }
 
   private createPlayerSprites(state: RenderState): void {
@@ -501,51 +790,80 @@ export class GameScene extends Phaser.Scene {
         else sprite.clearTint();
       } else sprite.clearTint();
 
-      this.updateKickBadge(player, sprite, warning, blinkOn);
-      this.prevKickTicks.set(player.id, player.kickTicks);
+      this.updateSkillBadges(player, sprite, warning, blinkOn);
     }
   }
 
   /**
-   * Maintains the overhead kick badge for one player, driven purely from the
-   * synced kickTicks so every client sees the same pickup + expiry cue.
+   * Maintains the overhead skill icon row for one player, driven purely from
+   * the synced counts so every client sees the same pickup + expiry cues. The
+   * row is centered over the head and only holds the skills currently owned.
    */
-  private updateKickBadge(
+  private updateSkillBadges(
     player: RenderPlayer,
     sprite: Phaser.GameObjects.Image,
     warning: boolean,
     blinkOn: boolean,
   ): void {
-    let badge = this.kickBadges.get(player.id);
-
-    if (player.kickTicks <= 0 || !player.alive) {
-      if (badge) {
-        badge.destroy();
-        this.kickBadges.delete(player.id);
-      }
-      return;
+    let badges = this.skillBadges.get(player.id);
+    if (!badges) {
+      badges = new Map();
+      this.skillBadges.set(player.id, badges);
+    }
+    let prev = this.prevSkillValues.get(player.id);
+    if (!prev) {
+      prev = new Map();
+      this.prevSkillValues.set(player.id, prev);
     }
 
-    if (!badge) {
-      badge = addImage(this, sprite.x, sprite.y, TEX.powerup[PowerupType.Kick])
-        .setDepth(DEPTH.player + 1);
-      badge.setScale(KICK_BADGE_HEIGHT / badge.height);
-      this.kickBadges.set(player.id, badge);
-      // Pickup pop: quick scale-down settle when kick first turns on.
-      if ((this.prevKickTicks.get(player.id) ?? 0) === 0) {
-        const base = badge.scale;
-        this.tweens.add({ targets: badge, scale: { from: base * 1.6, to: base }, duration: 200 });
-      }
+    const active = player.alive ? SKILL_BADGES.filter((s) => s.value(player) > 0) : [];
+    const activeKeys = new Set(active.map((s) => s.key));
+    for (const [key, badge] of badges) {
+      if (activeKeys.has(key)) continue;
+      badge.icon.destroy();
+      badge.count?.destroy();
+      badges.delete(key);
     }
 
     // Sits just above the (bottom-anchored) player sprite's head.
-    badge.setPosition(sprite.x, sprite.y - SPRITE_SIZE.playerHeight - 6);
-    if (warning) {
-      badge.setTint(KICK_WARNING_TINT).setVisible(blinkOn);
-    } else {
-      badge.clearTint();
-      badge.setVisible(true);
-    }
+    const rowY = sprite.y - SPRITE_SIZE.playerHeight - 6;
+    active.forEach((skill, i) => {
+      const value = skill.value(player);
+      const x = sprite.x + (i - (active.length - 1) / 2) * SKILL_BADGE_STEP;
+      let badge = badges.get(skill.key);
+      if (!badge) {
+        const icon = addImage(this, x, rowY, TEX.powerup[skill.type]).setDepth(DEPTH.player + 1);
+        icon.setScale(SKILL_BADGE_HEIGHT / icon.height);
+        const count = skill.showCount
+          ? this.add
+              .text(x, rowY + SKILL_BADGE_HEIGHT / 2, '', {
+                fontFamily: 'monospace',
+                fontSize: '11px',
+                color: '#ffffff',
+                resolution: TEXT_RES,
+              })
+              .setOrigin(0.5, 0.5)
+              .setDepth(DEPTH.player + 1)
+          : null;
+        badge = { icon, count };
+        badges.set(skill.key, badge);
+        // Pickup pop: quick scale-down settle when the skill first turns on.
+        if ((prev.get(skill.key) ?? 0) === 0) {
+          const base = icon.scale;
+          this.tweens.add({ targets: icon, scale: { from: base * 1.6, to: base }, duration: 200 });
+        }
+      }
+      badge.icon.setPosition(x, rowY);
+      badge.count?.setPosition(x, rowY + SKILL_BADGE_HEIGHT / 2).setText(String(value));
+      // Kick is the only timed skill: blink it red over its final ticks.
+      const blinkOff = skill.key === 'kick' && warning && !blinkOn;
+      if (skill.key === 'kick' && warning) badge.icon.setTint(KICK_WARNING_TINT);
+      else badge.icon.clearTint();
+      badge.icon.setVisible(!blinkOff);
+      badge.count?.setVisible(!blinkOff);
+    });
+
+    for (const skill of SKILL_BADGES) prev.set(skill.key, skill.value(player));
   }
 
   /**
@@ -560,6 +878,13 @@ export class GameScene extends Phaser.Scene {
     this.reconcilePowerups(state);
   }
 
+  /** Soft-block art for one cell: the map's `visual` hint, or the classic crate. */
+  private softBlockRef(col: number, row: number): TexRef {
+    if (this.theme !== 'winter') return TEX.softBlock;
+    const visual = this.compiled?.visuals[row][col];
+    return (visual ? TEX.winter.softByVisual[visual] : undefined) ?? TEX.winter.softByVisual.snow;
+  }
+
   private reconcileSoftBlocks(state: RenderState): void {
     for (let row = 0; row < GRID_HEIGHT; row++) {
       for (let col = 0; col < GRID_WIDTH; col++) {
@@ -569,7 +894,7 @@ export class GameScene extends Phaser.Scene {
         if (isSoft && !sprite) {
           this.softBlockSprites.set(
             key,
-            addImage(this, toX(col), toY(row), TEX.softBlock)
+            addImage(this, toX(col), toY(row), this.softBlockRef(col, row))
               .setDisplaySize(TILE_SIZE, TILE_SIZE)
               .setDepth(DEPTH.block),
           );
@@ -739,6 +1064,9 @@ export class GameScene extends Phaser.Scene {
     if (!me) return;
     let line = `Bombs: ${me.bombCount}  Blast: ${me.blastRadius}  Speed: ${me.speed.toFixed(1)}  Alive: ${aliveCount}`;
     if (me.kickTicks > 0) line += `  Kick: ${Math.ceil(me.kickTicks / TICK_RATE)}s`;
+    // Counters carry the trigger: while armed, Space fires instead of bombing.
+    if (me.gunAmmo > 0) line += `  Gun[${SKILL_KEY_LABEL}]: ${me.gunAmmo}`;
+    if (me.hammerUses > 0) line += `  Hammer[${SKILL_KEY_LABEL}]: ${me.hammerUses}`;
     if (this.mode === 'online') {
       line += `  Ping: ${this.pingMs === null ? '--' : `${this.pingMs}ms`}`;
     }
@@ -772,7 +1100,7 @@ export class GameScene extends Phaser.Scene {
 
   private buildSkillsPanel(): void {
     const width = 540;
-    const height = 150;
+    const height = 205; // header + 6 skill rows
     const cx = this.scale.width / 2;
     const cy = this.scale.height / 2;
     const panel = this.add
@@ -862,7 +1190,11 @@ export class GameScene extends Phaser.Scene {
     again.on('pointerover', () => again.setColor('#ffffff'));
     again.on('pointerout', () => again.setColor('#ffe040'));
     again.on('pointerdown', () => {
-      this.scene.restart({ mode: 'offline', seed: Date.now() >>> 0 } satisfies GameSceneData);
+      this.scene.restart({
+        mode: 'offline',
+        seed: Date.now() >>> 0,
+        mapId: this.mapId,
+      } satisfies GameSceneData);
     });
 
     const back = this.add

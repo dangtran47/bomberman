@@ -1,9 +1,10 @@
 import Phaser from 'phaser';
 import { PowerupType } from '@bomberman/shared';
+import { SKILL_KEY_LABEL } from './controls';
 import { TEX, TEXT_RES, addImage } from './textures';
 
-/** One skill row: powerup type, name, and a one-line effect. */
-const SKILLS: { type: PowerupType; name: string; effect: string }[] = [
+/** One skill row: powerup type, name, a one-line effect, and its key if it has one. */
+const SKILLS: { type: PowerupType; name: string; effect: string; key?: string }[] = [
   { type: PowerupType.ExtraBomb, name: 'Extra Bomb', effect: '+1 bomb at once' },
   { type: PowerupType.BiggerBlast, name: 'Bigger Blast', effect: '+1 blast range' },
   { type: PowerupType.Speed, name: 'Speed', effect: 'move faster' },
@@ -11,6 +12,18 @@ const SKILLS: { type: PowerupType; name: string; effect: string }[] = [
     type: PowerupType.Kick,
     name: 'Kick',
     effect: 'walk into a bomb to kick it; slides & blows up on impact (15s)',
+  },
+  {
+    type: PowerupType.Gun,
+    name: 'Gun',
+    effect: '2 shots — breaks a block, downs a player, sets off a bomb',
+    key: SKILL_KEY_LABEL,
+  },
+  {
+    type: PowerupType.Hammer,
+    name: 'Hammer',
+    effect: '3 swings — smashes the tile ahead, sets off a bomb',
+    key: SKILL_KEY_LABEL,
   },
 ];
 
@@ -45,8 +58,9 @@ export function buildSkillsTable(
     icon.setScale(ICON_SIZE / icon.height);
     objects.push(icon);
 
+    const name = skill.key ? `${skill.name} [${skill.key}]` : skill.name;
     objects.push(
-      scene.add.text(x + ICON_SIZE + 8, rowY + ICON_SIZE / 2, `${skill.name}: ${skill.effect}`, {
+      scene.add.text(x + ICON_SIZE + 8, rowY + ICON_SIZE / 2, `${name}: ${skill.effect}`, {
         fontFamily: 'monospace',
         fontSize: '13px',
         color: '#ffffff',
@@ -54,6 +68,20 @@ export function buildSkillsTable(
       }).setOrigin(0, 0.5),
     );
   });
+
+  objects.push(
+    scene.add.text(
+      x,
+      y + HEADER_GAP + SKILLS.length * ROW_HEIGHT + 6,
+      'Move: arrows / WASD    Bomb: Space (fires the held skill instead)',
+      {
+        fontFamily: 'monospace',
+        fontSize: '13px',
+        color: '#999999',
+        resolution: TEXT_RES,
+      },
+    ),
+  );
 
   return objects;
 }

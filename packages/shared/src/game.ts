@@ -6,12 +6,18 @@ import {
   EXPLOSION_DURATION_TICKS,
   GRID_HEIGHT,
   GRID_WIDTH,
+  GUN_AMMO_PER_PICKUP,
+  HAMMER_USES_PER_PICKUP,
+  ICE_GLIDE_SPEED_MULT,
+  ICE_GLIDE_TICKS,
+  ICE_TURN_DELAY_TICKS,
   KICK_DURATION_TICKS,
   MAX_BLAST_RADIUS,
   MAX_BOMB_COUNT,
   MAX_SPEED,
   POWERUP_DROP_CHANCE,
   POWERUP_TYPE_COUNT,
+  SKILL_ACTION_COOLDOWN_TICKS,
   SPEED_INCREMENT,
   SUDDEN_DEATH_INTERVAL_TICKS,
   SUDDEN_DEATH_START_TICKS,
@@ -19,6 +25,7 @@ import {
   kickSlideInterval,
 } from './constants';
 import { SPAWN_POINTS, generateMap } from './map';
+import { compileMap, getMapDef } from './maps';
 import { SHRINK_ORDER } from './suddenDeath';
 import { createRng } from './rng';
 import { PowerupType, TileType } from './types';
@@ -29,6 +36,8 @@ export type GameStatus = 'running' | 'finished';
 export interface GameState {
   tick: number;
   grid: TileType[][];
+  /** Row-major slippery-tile mask; all false on procedural maps. */
+  ice: boolean[][];
   players: Player[];
   bombs: Bomb[];
   explosions: ExplosionCell[];
@@ -57,6 +66,16 @@ export type GameEvent =
       powerupType: PowerupType;
     }
   | { type: 'playerDied'; playerId: string; col: number; row: number }
+  | {
+      type: 'gunFired';
+      playerId: string;
+      col: number; // shooter tile
+      row: number;
+      dir: Direction;
+      hitCol: number | null; // cell the ray stopped on, null if it left the grid
+      hitRow: number | null;
+    }
+  | { type: 'hammerSwung'; playerId: string; col: number; row: number } // col/row = struck tile
   | { type: 'arenaShrink'; col: number; row: number }
   | { type: 'gameEnded'; winnerId: string | null };
 
@@ -74,6 +93,8 @@ export interface CreateGameOptions {
   playerIds: string[];
   /** Test hook: overrides generateMap(seed). Row-major [row][col]; deep-copied. */
   grid?: TileType[][];
+  /** Registry map to compile; unknown or empty falls back to generateMap(seed). */
+  mapId?: string;
 }
 
 const IDLE_INPUT: PlayerInput = { direction: null, placeBomb: false };
@@ -86,6 +107,13 @@ const RAY_DIRECTIONS: [dc: number, dr: number][] = [
   [-1, 0], // left
   [1, 0], // right
 ];
+
+const DIRECTION_STEPS: Record<Direction, [dc: number, dr: number]> = {
+  up: [0, -1],
+  down: [0, 1],
+  left: [-1, 0],
+  right: [1, 0],
+};
 
 export function createGame(opts: CreateGameOptions): Game {
   return new GameImpl(opts);
@@ -100,6 +128,10 @@ function tileKey(col: number, row: number): string {
   return `${col},${row}`;
 }
 
+function emptyIceMask(): boolean[][] {
+  return Array.from({ length: GRID_HEIGHT }, () => Array<boolean>(GRID_WIDTH).fill(false));
+}
+
 function applyPowerup(player: Player, type: PowerupType): void {
   switch (type) {
     case PowerupType.ExtraBomb:
@@ -111,10 +143,28 @@ function applyPowerup(player: Player, type: PowerupType): void {
     case PowerupType.Speed:
       player.speed = Math.min(MAX_SPEED, player.speed + SPEED_INCREMENT);
       break;
+    // The three skills are exclusive: a pickup always replaces whatever is
+    // held, so a player carries at most one (re-pickup of the same one refills).
     case PowerupType.Kick:
-      player.kickTicks = KICK_DURATION_TICKS; // re-pickup resets to full
+      clearSkills(player);
+      player.kickTicks = KICK_DURATION_TICKS;
+      break;
+    case PowerupType.Gun:
+      clearSkills(player);
+      player.gunAmmo = GUN_AMMO_PER_PICKUP;
+      break;
+    case PowerupType.Hammer:
+      clearSkills(player);
+      player.hammerUses = HAMMER_USES_PER_PICKUP;
       break;
   }
+}
+
+/** Drops every held skill. Stat upgrades (bombs, blast, speed) are untouched. */
+function clearSkills(player: Player): void {
+  player.kickTicks = 0;
+  player.gunAmmo = 0;
+  player.hammerUses = 0;
 }
 
 class GameImpl implements Game {
@@ -122,14 +172,18 @@ class GameImpl implements Game {
   private readonly rng: () => number;
   private nextBombId = 1;
 
-  constructor({ seed, playerIds, grid }: CreateGameOptions) {
+  constructor({ seed, playerIds, grid, mapId }: CreateGameOptions) {
     if (playerIds.length < 2 || playerIds.length > SPAWN_POINTS.length) {
       throw new Error(`playerIds must have 2-${SPAWN_POINTS.length} entries, got ${playerIds.length}`);
     }
     this.rng = createRng(seed);
+    // Grid override wins (test hook), then a registry map, then the procedural map.
+    const def = grid ? undefined : getMapDef(mapId);
+    const compiled = def ? compileMap(def, seed) : undefined;
     this.state = {
       tick: 0,
-      grid: grid ? grid.map((row) => [...row]) : generateMap(seed),
+      grid: grid ? grid.map((row) => [...row]) : (compiled?.grid ?? generateMap(seed)),
+      ice: compiled?.ice ?? emptyIceMask(),
       players: playerIds.map((id, i) => ({
         id,
         x: SPAWN_POINTS[i].col,
@@ -140,6 +194,14 @@ class GameImpl implements Game {
         blastRadius: BASE_BLAST_RADIUS,
         activeBombs: 0,
         kickTicks: 0,
+        gunAmmo: 0,
+        hammerUses: 0,
+        actionCooldown: 0,
+        triggerHeld: false,
+        facing: 'down',
+        momentumDir: null,
+        momentumTicks: 0,
+        turnTicks: 0,
         deathTick: null,
       })),
       bombs: [],
@@ -160,8 +222,18 @@ class GameImpl implements Game {
       if (!player.alive) continue;
       if (player.kickTicks > 0) player.kickTicks--;
       const input = readInput(inputs, player.id);
-      if (input.placeBomb) this.placeBomb(player, events);
-      if (input.direction) this.movePlayer(player, input.direction);
+      if (input.direction) player.facing = input.direction; // aims the skills too
+      // Space is one button: while a skill is held it triggers that skill and
+      // places no bombs, and it fires on the press (a held trigger would burn
+      // the whole magazine at the cooldown's rate).
+      const armed = player.gunAmmo > 0 || player.hammerUses > 0;
+      const pressed = input.placeBomb && !player.triggerHeld;
+      player.triggerHeld = input.placeBomb;
+      if (input.placeBomb && !armed) this.placeBomb(player, events);
+      if (player.actionCooldown > 0) player.actionCooldown--;
+      if (input.fireGun || (pressed && player.gunAmmo > 0)) this.fireGun(player, events);
+      if (input.swingHammer || (pressed && player.hammerUses > 0)) this.swingHammer(player, events);
+      this.stepPlayer(player, input.direction ?? null);
     }
 
     this.ageExplosions();
@@ -197,13 +269,206 @@ class GameImpl implements Game {
   }
 
   /**
+   * Fires one shot along `facing` from the shooter's tile. The ray stops on the
+   * first hard block, soft block (destroyed, with a blast's drop roll) or rival
+   * player (killed); bombs and powerups are passed over.
+   */
+  private fireGun(player: Player, events: GameEvent[]): void {
+    if (player.gunAmmo <= 0 || player.actionCooldown > 0) return;
+    const s = this.state;
+    player.gunAmmo--;
+    player.actionCooldown = SKILL_ACTION_COOLDOWN_TICKS;
+
+    const col = Math.round(player.x);
+    const row = Math.round(player.y);
+    const [dc, dr] = DIRECTION_STEPS[player.facing];
+    let hitCol: number | null = null;
+    let hitRow: number | null = null;
+    let softHit = false;
+    let victim: Player | undefined;
+    let shotBomb: Bomb | undefined;
+
+    for (let step = 1; ; step++) {
+      const c = col + dc * step;
+      const r = row + dr * step;
+      if (c < 0 || c >= GRID_WIDTH || r < 0 || r >= GRID_HEIGHT) break;
+      const tile = s.grid[r][c];
+      if (tile === TileType.HardBlock) {
+        hitCol = c;
+        hitRow = r;
+        break;
+      }
+      if (tile === TileType.SoftBlock) {
+        hitCol = c;
+        hitRow = r;
+        softHit = true;
+        break;
+      }
+      // A bomb takes the shot and goes off with it; the ray stops there.
+      const bomb = s.bombs.find((b) => b.col === c && b.row === r);
+      if (bomb) {
+        hitCol = c;
+        hitRow = r;
+        shotBomb = bomb;
+        break;
+      }
+      victim = this.alivePlayerAt(c, r, player);
+      if (victim) {
+        hitCol = c;
+        hitRow = r;
+        break;
+      }
+    }
+
+    events.push({
+      type: 'gunFired',
+      playerId: player.id,
+      col,
+      row,
+      dir: player.facing,
+      hitCol,
+      hitRow,
+    });
+    if (softHit && hitCol !== null && hitRow !== null) this.destroySoftBlock(hitCol, hitRow, events);
+    // Same as the hammer: detonateDueBombs runs later this tick and takes it to 0.
+    else if (shotBomb) shotBomb.fuseTicks = 1;
+    else if (victim) this.killPlayer(victim, events);
+  }
+
+  /**
+   * Hits the tile directly ahead: destroys a soft block or kills whoever stands
+   * there. Swinging at the grid edge is a no-op and costs nothing.
+   */
+  private swingHammer(player: Player, events: GameEvent[]): void {
+    if (player.hammerUses <= 0 || player.actionCooldown > 0) return;
+    const [dc, dr] = DIRECTION_STEPS[player.facing];
+    const col = Math.round(player.x) + dc;
+    const row = Math.round(player.y) + dr;
+    if (col < 0 || col >= GRID_WIDTH || row < 0 || row >= GRID_HEIGHT) return;
+
+    player.hammerUses--;
+    player.actionCooldown = SKILL_ACTION_COOLDOWN_TICKS;
+    events.push({ type: 'hammerSwung', playerId: player.id, col, row });
+
+    if (this.state.grid[row][col] === TileType.SoftBlock) {
+      this.destroySoftBlock(col, row, events);
+      return;
+    }
+    // Smacking a bomb sets it off: detonateDueBombs runs later this same tick
+    // and takes the fuse to 0 (same trick as a kicked bomb hitting a wall).
+    const bomb = this.state.bombs.find((b) => b.col === col && b.row === row);
+    if (bomb) {
+      bomb.fuseTicks = 1;
+      return;
+    }
+    const victim = this.alivePlayerAt(col, row, player);
+    if (victim) this.killPlayer(victim, events);
+  }
+
+  private alivePlayerAt(col: number, row: number, except: Player): Player | undefined {
+    return this.state.players.find(
+      (p) => p.alive && p !== except && Math.round(p.x) === col && Math.round(p.y) === row,
+    );
+  }
+
+  /** Skill-destroyed block: same event and same drop rolls as an explosion ray. */
+  private destroySoftBlock(col: number, row: number, events: GameEvent[]): void {
+    const s = this.state;
+    s.grid[row][col] = TileType.Floor;
+    events.push({ type: 'blockDestroyed', col, row });
+    if (this.rng() < POWERUP_DROP_CHANCE) {
+      const type = Math.floor(this.rng() * POWERUP_TYPE_COUNT) as PowerupType;
+      // Dropped on the block's own tile, so nothing can pick it up this tick.
+      s.powerups.push({ col, row, type });
+      events.push({ type: 'powerupSpawned', col, row, powerupType: type });
+    }
+  }
+
+  /** The one death path: every kill clears the skills and emits playerDied. */
+  private killPlayer(player: Player, events: GameEvent[]): void {
+    const col = Math.round(player.x);
+    const row = Math.round(player.y);
+    player.alive = false;
+    player.deathTick = this.state.tick;
+    clearSkills(player);
+    player.actionCooldown = 0;
+    player.turnTicks = 0;
+    this.clearMomentum(player);
+    events.push({ type: 'playerDied', playerId: player.id, col, row });
+  }
+
+  /**
+   * Per-tick movement dispatcher. Off ice this is exactly the classic
+   * "move while the key is held" behaviour; on ice the player carries a
+   * momentum heading that resists turns and keeps gliding once the input is
+   * released.
+   */
+  private stepPlayer(player: Player, direction: Direction | null): void {
+    if (!this.isIce(Math.round(player.x), Math.round(player.y))) {
+      player.turnTicks = 0;
+      if (direction) this.driveIce(player, direction);
+      else this.clearMomentum(player);
+      return;
+    }
+
+    if (direction) {
+      if (player.momentumDir === null || player.momentumDir === direction) {
+        player.turnTicks = 0;
+        this.driveIce(player, direction);
+        return;
+      }
+      // Turning on ice: the old heading holds for a few ticks before it takes.
+      player.turnTicks++;
+      if (player.turnTicks >= ICE_TURN_DELAY_TICKS) {
+        player.turnTicks = 0;
+        this.driveIce(player, direction);
+      } else {
+        this.driveIce(player, player.momentumDir);
+      }
+      return;
+    }
+
+    // Released on ice: glide on in the last heading, decaying linearly.
+    if (player.momentumDir === null || player.momentumTicks <= 0) {
+      this.clearMomentum(player);
+      return;
+    }
+    const mult = ICE_GLIDE_SPEED_MULT * (player.momentumTicks / ICE_GLIDE_TICKS);
+    const blocked = this.movePlayer(player, player.momentumDir, mult);
+    player.momentumTicks--;
+    if (blocked || player.momentumTicks <= 0) this.clearMomentum(player);
+  }
+
+  /** Moves at full speed and (re)charges the glide budget unless a wall stops it. */
+  private driveIce(player: Player, direction: Direction): void {
+    const blocked = this.movePlayer(player, direction);
+    if (blocked) {
+      this.clearMomentum(player);
+      return;
+    }
+    player.momentumDir = direction;
+    player.momentumTicks = ICE_GLIDE_TICKS;
+  }
+
+  private clearMomentum(player: Player): void {
+    player.momentumDir = null;
+    player.momentumTicks = 0;
+  }
+
+  private isIce(col: number, row: number): boolean {
+    if (col < 0 || col >= GRID_WIDTH || row < 0 || row >= GRID_HEIGHT) return false;
+    return this.state.ice[row][col];
+  }
+
+  /**
    * Axis-locked movement with corner slide: to move along an axis the player
    * must be aligned to the perpendicular lane; if not, the tick's movement
    * budget is spent sliding toward the nearest lane first, and any remainder
-   * goes into the requested direction.
+   * goes into the requested direction. `budgetMult` scales the tick's budget
+   * (ice glide); returns true when the tile ahead stopped the player short.
    */
-  private movePlayer(player: Player, direction: Direction): void {
-    let budget = player.speed / TICK_RATE;
+  private movePlayer(player: Player, direction: Direction, budgetMult = 1): boolean {
+    let budget = (player.speed / TICK_RATE) * budgetMult;
     const horizontal = direction === 'left' || direction === 'right';
 
     const perp = horizontal ? player.y : player.x;
@@ -219,10 +484,10 @@ class GameImpl implements Game {
         const step = Math.sign(lane - perp) * budget;
         if (horizontal) player.y += step;
         else player.x += step;
-        return;
+        return false;
       }
     }
-    if (budget <= EPS) return;
+    if (budget <= EPS) return false;
 
     const sign = direction === 'down' || direction === 'right' ? 1 : -1;
     const pos = horizontal ? player.x : player.y;
@@ -231,9 +496,11 @@ class GameImpl implements Game {
     const nextCol = horizontal ? cur + sign : Math.round(player.x);
     const nextRow = horizontal ? Math.round(player.y) : cur + sign;
     let next: number;
+    let blocked = false;
     if (this.canEnter(nextCol, nextRow)) {
       next = target;
     } else {
+      blocked = true;
       // Kick: with the skill active, a bomb blocking the tile ahead slides off
       // in the movement direction; the player still clamps this tick.
       if (
@@ -261,6 +528,7 @@ class GameImpl implements Game {
     }
     if (horizontal) player.x = next;
     else player.y = next;
+    return blocked;
   }
 
   /**
@@ -425,10 +693,7 @@ class GameImpl implements Game {
     for (const player of s.players) {
       if (!player.alive) continue;
       if (Math.round(player.x) === col && Math.round(player.y) === row) {
-        player.alive = false;
-        player.deathTick = s.tick;
-        player.kickTicks = 0;
-        events.push({ type: 'playerDied', playerId: player.id, col, row });
+        this.killPlayer(player, events);
       }
     }
   }
@@ -441,12 +706,7 @@ class GameImpl implements Game {
       if (!player.alive) continue;
       const col = Math.round(player.x);
       const row = Math.round(player.y);
-      if (burning.has(tileKey(col, row))) {
-        player.alive = false;
-        player.deathTick = s.tick;
-        player.kickTicks = 0;
-        events.push({ type: 'playerDied', playerId: player.id, col, row });
-      }
+      if (burning.has(tileKey(col, row))) this.killPlayer(player, events);
     }
   }
 

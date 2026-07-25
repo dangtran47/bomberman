@@ -30,6 +30,34 @@ describe('copySimToSchema', () => {
     expect(p0.speed).toBe(simP0.speed);
     expect(p0.activeBombs).toBe(simP0.activeBombs);
     expect(p0.kickTicks).toBe(simP0.kickTicks);
+    expect(p0.gunAmmo).toBe(simP0.gunAmmo);
+    expect(p0.hammerUses).toBe(simP0.hammerUses);
+    expect(p0.facing).toBe(simP0.facing);
+    expect(p0.facing).toBe('right'); // input direction aims the skills
+  });
+
+  it('mirrors the skill counters and facing in place', () => {
+    const game = createGame({ seed: 42, playerIds: ['p0', 'p1'] });
+    const state = makeRoomState(['p0', 'p1']);
+    game.state.players[0].gunAmmo = 2;
+    game.state.players[0].hammerUses = 3;
+    game.state.players[0].facing = 'left';
+    copySimToSchema(game.state, state);
+    const p0 = state.players.get('p0')!;
+    expect(p0.gunAmmo).toBe(2);
+    expect(p0.hammerUses).toBe(3);
+    expect(p0.facing).toBe('left');
+  });
+
+  it('defaults a fresh PlayerSchema to no skills facing down', () => {
+    const p = new PlayerSchema();
+    expect(p.gunAmmo).toBe(0);
+    expect(p.hammerUses).toBe(0);
+    expect(p.facing).toBe('down');
+  });
+
+  it('defaults RoomState.mapId to the classic procedural map', () => {
+    expect(new RoomState().mapId).toBe('');
   });
 
   it('mirrors kickTicks in place', () => {

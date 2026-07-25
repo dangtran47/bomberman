@@ -19,6 +19,7 @@ export const ATLAS_PAGES = [
   'gameplay4',
   'gameplay5',
   'gameplay6',
+  'gameplay7',
 ] as const;
 
 /** URL of the libGDX atlas descriptor (served from public/assets). */
@@ -36,6 +37,7 @@ const G3 = 'gameplay3';
 const G4 = 'gameplay4';
 const G5 = 'gameplay5';
 const G6 = 'gameplay6';
+const G7 = 'gameplay7';
 
 /** Tint applied to kick-related visuals (cyan). */
 export const KICK_TINT = 0x40e0ff;
@@ -74,6 +76,8 @@ export const TEX = {
     [PowerupType.BiggerBlast]: { key: G1, frame: 'bonus_hand' },
     [PowerupType.Speed]: { key: G1, frame: 'whistle' },
     [PowerupType.Kick]: { key: G6, frame: 'boots' },
+    [PowerupType.Gun]: { key: G7, frame: 'winter_gun' },
+    [PowerupType.Hammer]: { key: G7, frame: 'winter_hammer' },
   } as Record<PowerupType, TexRef>,
   /**
    * Winter theme. All blocks are flat 64x64 square tiles (no overhang):
@@ -83,14 +87,23 @@ export const TEX = {
   winter: {
     floor: { key: G6, frame: 'winter_floor' },
     floorAlt: { key: G6, frame: 'winter_floor2' },
+    /** Slippery tile art, drawn instead of the floor on `ice` cells. */
+    iceFloor: { key: G7, frame: 'winter_floor_ice' },
     hardBlock: { key: G6, frame: 'winter_wall' },
-    softBlocks: [
-      { key: G6, frame: 'winter_block_snow' },
-      { key: G6, frame: 'winter_block_ice' },
-      { key: G6, frame: 'winter_block_ice_sparkle' },
-      { key: G6, frame: 'winter_block_brick' },
-      { key: G6, frame: 'winter_block_snowball' },
-    ],
+    /** Multi-tile prop art, keyed by MapProp.visual (house spans 3x3 tiles). */
+    house: { key: G7, frame: 'winter_house' },
+    /** Soft-block art keyed by the map legend's `visual` hint. */
+    softByVisual: {
+      bottles: { key: G7, frame: 'winter_soft_bottles' },
+      cans: { key: G7, frame: 'winter_soft_cans' },
+      sled: { key: G7, frame: 'winter_soft_sled' },
+      window: { key: G7, frame: 'winter_soft_window' },
+      snowball: { key: G6, frame: 'winter_block_snowball' },
+      snow: { key: G6, frame: 'winter_block_snow' },
+      ice: { key: G6, frame: 'winter_block_ice' },
+      iceSparkle: { key: G6, frame: 'winter_block_ice_sparkle' },
+      brick: { key: G6, frame: 'winter_block_brick' },
+    } as Record<string, TexRef>,
   },
   background: { key: G2, frame: 'background' },
   leaderboard: { key: G4, frame: 'background_leaderboard' },

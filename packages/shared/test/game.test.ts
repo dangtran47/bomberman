@@ -18,12 +18,12 @@ import { PowerupType, TileType } from '../src/types';
 import type { Direction, PlayerInput } from '../src/types';
 
 // Seeds mined against createRng so the game's FIRST powerup roll is known.
-// Type roll is Math.floor(rng() * POWERUP_TYPE_COUNT) with POWERUP_TYPE_COUNT=4:
-// seed 7 -> drop ExtraBomb, seed 15 -> drop BiggerBlast, seed 8 -> drop Speed,
+// Type roll is Math.floor(rng() * POWERUP_TYPE_COUNT) with POWERUP_TYPE_COUNT=6:
+// seed 7 -> drop ExtraBomb, seed 19 -> drop BiggerBlast, seed 15 -> drop Speed,
 // seed 1 -> no drop (first roll 0.627 >= POWERUP_DROP_CHANCE).
 const SEED_EXTRA_BOMB = 7;
-const SEED_BIGGER_BLAST = 15;
-const SEED_SPEED = 8;
+const SEED_BIGGER_BLAST = 19;
+const SEED_SPEED = 15;
 const SEED_NO_DROP = 1;
 
 const STEP = BASE_SPEED / 20; // 0.15 tiles per tick at base speed
@@ -302,7 +302,7 @@ describe('explosions', () => {
   });
 
   it('stops a longer ray at the first soft block it destroys', () => {
-    // Seed 8 drops BiggerBlast from the first destroyed block; p1 collects it
+    // SEED_BIGGER_BLAST drops BiggerBlast from the first destroyed block; p1 collects it
     // so the second bomb has radius 2, with soft blocks at (2,0) and (3,0).
     const grid = openGrid();
     grid[0][1] = TileType.SoftBlock;
@@ -334,7 +334,7 @@ describe('explosions', () => {
   });
 
   it('chain reaction: a ray hitting another bomb detonates it the same tick', () => {
-    // Seed 7 drops ExtraBomb from the first destroyed block -> bombCount 2.
+    // SEED_EXTRA_BOMB drops ExtraBomb from the first destroyed block -> bombCount 2.
     const grid = openGrid();
     grid[0][1] = TileType.SoftBlock;
     const game = twoPlayerGame(grid, SEED_EXTRA_BOMB);

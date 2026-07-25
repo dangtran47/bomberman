@@ -1,6 +1,6 @@
 import { Client } from 'colyseus.js';
 import type { Room } from 'colyseus.js';
-import type { PowerupType } from '@bomberman/shared';
+import type { Direction, PowerupType } from '@bomberman/shared';
 
 /**
  * Thin Colyseus wrapper: create/join rooms and structural typings for the
@@ -32,6 +32,10 @@ export interface NetPlayer {
   isBot: boolean;
   character: number;
   kickTicks: number;
+  gunAmmo: number;
+  hammerUses: number;
+  /** Last requested direction; aims the gun tracer and hammer flash. */
+  facing: Direction;
   wins: number;
   placement: number;
 }
@@ -63,6 +67,8 @@ export interface NetRoomState {
   code: string;
   hostId: string;
   fillBots: boolean;
+  /** Registry map id chosen by the host; '' = classic procedural. */
+  mapId: string;
   tick: number;
   seed: number;
   /** row * GRID_WIDTH + col indices, append-only. */

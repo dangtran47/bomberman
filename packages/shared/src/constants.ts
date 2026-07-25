@@ -18,7 +18,7 @@ export const MAX_BLAST_RADIUS = 8;
 
 export const SOFT_BLOCK_DENSITY = 0.75; // fraction of eligible floor tiles that become soft blocks
 export const POWERUP_DROP_CHANCE = 0.3;
-export const POWERUP_TYPE_COUNT = 4;
+export const POWERUP_TYPE_COUNT = 6;
 
 export const CHARACTER_COUNT = 6;
 
@@ -30,6 +30,16 @@ export const KICK_SLIDE_SPEED_MULT = 3; // a kicked bomb travels at ~3x the kick
 export function kickSlideInterval(speed: number): number {
   return Math.max(1, Math.round(TICK_RATE / (speed * KICK_SLIDE_SPEED_MULT)));
 }
+
+/** Ice drift: how long a released heading keeps gliding, and how it decays. */
+export const ICE_GLIDE_TICKS = 8;
+export const ICE_GLIDE_SPEED_MULT = 0.75;
+/** Ticks of the old heading before a turn takes effect on ice. */
+export const ICE_TURN_DELAY_TICKS = 3;
+
+export const GUN_AMMO_PER_PICKUP = 2;
+export const HAMMER_USES_PER_PICKUP = 3;
+export const SKILL_ACTION_COOLDOWN_TICKS = 6; // shared gun/hammer cooldown
 
 export const SUDDEN_DEATH_START_TICKS = 2400; // 2min at 20tps
 export const SUDDEN_DEATH_INTERVAL_TICKS = 10; // one tile per 0.5s

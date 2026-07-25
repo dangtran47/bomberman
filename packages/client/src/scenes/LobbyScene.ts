@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { CHARACTER_COUNT } from '@bomberman/shared';
 import type { GameRoomConnection, NetPlayer } from '../net';
+import { mapName, nextMapId } from '../maps';
 import { TEX, TEXT_RES, addImage, addMenuBackdrop } from '../textures';
 import { buildSkillsTable } from '../skillsTable';
 import type { GameSceneData } from './GameScene';
@@ -28,6 +29,7 @@ export class LobbyScene extends Phaser.Scene {
   /** Roster rows (character sprite + name), rebuilt each refresh. */
   private rosterObjects: Phaser.GameObjects.GameObject[] = [];
   private fillBotsText!: Phaser.GameObjects.Text;
+  private mapText!: Phaser.GameObjects.Text;
   private startText!: Phaser.GameObjects.Text;
   private waitingText!: Phaser.GameObjects.Text;
   private errorText!: Phaser.GameObjects.Text;
@@ -83,6 +85,23 @@ export class LobbyScene extends Phaser.Scene {
     }
 
     // Roster rows are rebuilt in refresh() (state-driven).
+
+    // Arena picker: host-only control, but everyone sees the current choice.
+    this.mapText = this.add
+      .text(cx, 400, '', { ...style, fontSize: '22px', color: '#ffe040' })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true })
+      .on('pointerover', () => {
+        if (this.isHost()) this.mapText.setColor('#ffffff');
+      })
+      .on('pointerout', () => {
+        if (this.isHost()) this.mapText.setColor('#ffe040');
+      })
+      .on('pointerdown', () => {
+        if (!this.isHost()) return;
+        const state = this.connection.room.state;
+        this.connection.room.send('setMap', { mapId: nextMapId(state.mapId) });
+      });
 
     this.fillBotsText = this.add
       .text(cx, 430, '', { ...style, fontSize: '22px', color: '#ffe040' })
@@ -155,10 +174,17 @@ export class LobbyScene extends Phaser.Scene {
     this.rebuildRoster(state);
     this.rebuildPicker(state);
 
-    const isHost = state.hostId === this.connection.playerId;
+    const isHost = this.isHost();
+    this.mapText
+      .setText(`Map: ${mapName(state.mapId)}${isHost ? '  ⇄' : ''}`)
+      .setColor(isHost ? '#ffe040' : '#999999');
     this.fillBotsText.setVisible(isHost).setText(`Fill with bots: ${state.fillBots ? 'ON' : 'OFF'}`);
     this.startText.setVisible(isHost);
     this.waitingText.setVisible(!isHost);
+  }
+
+  private isHost(): boolean {
+    return this.connection.room.state.hostId === this.connection.playerId;
   }
 
   /** Rebuilds the roster rows: each player's picked character sprite + name. */
@@ -305,7 +331,7 @@ export class LobbyScene extends Phaser.Scene {
    */
   private buildSkillsPanel(): void {
     const width = 620;
-    const height = 240;
+    const height = 292; // header + 6 skill rows
     const cx = this.scale.width / 2;
     const cy = 332;
     const panelLeft = cx - width / 2;

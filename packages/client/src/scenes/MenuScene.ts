@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { createRoom, joinRoom } from '../net';
 import type { GameRoomConnection } from '../net';
+import { mapName, nextMapId } from '../maps';
 import { SPRITE_SIZE, TEX, TEXT_RES, addImage, addMenuBackdrop } from '../textures';
 import type { GameSceneData } from './GameScene';
 import type { LobbySceneData } from './LobbyScene';
@@ -29,6 +30,8 @@ export class MenuScene extends Phaser.Scene {
   private statusText!: Phaser.GameObjects.Text;
   private dialog: HTMLDivElement | null = null;
   private busy = false;
+  /** Arena for offline play; '' = classic procedural. Online picks it in the lobby. */
+  private mapId = '';
 
   constructor() {
     super('Menu');
@@ -43,8 +46,29 @@ export class MenuScene extends Phaser.Scene {
     const title = addImage(this, cx, 120, TEX.title);
     title.setScale(SPRITE_SIZE.titleWidth / title.width);
 
+    // Arena picker for offline play, cycling through the shared map registry.
+    const mapText = this.add
+      .text(cx, 228, '', {
+        fontFamily: 'monospace',
+        fontSize: '20px',
+        color: '#ffe040',
+        resolution: TEXT_RES,
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    const refreshMapText = (): void => {
+      mapText.setText(`Map: ${mapName(this.mapId)}  ⇄`);
+    };
+    refreshMapText();
+    mapText.on('pointerover', () => mapText.setColor('#ffffff'));
+    mapText.on('pointerout', () => mapText.setColor('#ffe040'));
+    mapText.on('pointerdown', () => {
+      this.mapId = nextMapId(this.mapId);
+      refreshMapText();
+    });
+
     this.addButton(cx, 280, 'Play vs Bots', () => {
-      const gameData: GameSceneData = { mode: 'offline', seed: Date.now() >>> 0 };
+      const gameData: GameSceneData = { mode: 'offline', seed: Date.now() >>> 0, mapId: this.mapId };
       this.scene.start('Game', gameData);
     });
 
@@ -76,7 +100,7 @@ export class MenuScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.add
-      .text(cx, 560, 'Move: Arrows / WASD    Bomb: Space', {
+      .text(cx, 560, 'Move: Arrows/WASD  Bomb: Space  Gun: E  Hammer: Q', {
         fontFamily: 'monospace',
         fontSize: '18px',
         color: '#999999',

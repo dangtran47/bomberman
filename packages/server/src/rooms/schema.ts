@@ -18,6 +18,10 @@ export class PlayerSchema extends Schema {
   @type('boolean') isBot = false;
   @type('number') character = 0;
   @type('number') kickTicks = 0;
+  @type('number') gunAmmo = 0;
+  @type('number') hammerUses = 0;
+  /** Last requested direction; the client aims skill FX with it. */
+  @type('string') facing = 'down';
   @type('number') wins = 0;
   @type('number') placement = 0;
 }
@@ -51,6 +55,8 @@ export class RoomState extends Schema {
   @type('boolean') fillBots = true;
   @type('number') tick = 0;
   @type('number') seed = 0;
+  /** Map id both sides compile the grid from; '' means classic procedural. */
+  @type('string') mapId = '';
   /** row * GRID_WIDTH + col indices of soft blocks destroyed so far (append-only). */
   @type(['number']) destroyedBlocks = new ArraySchema<number>();
   /** row * GRID_WIDTH + col indices of tiles converted to HardBlock by sudden death (append-only). */
@@ -82,6 +88,11 @@ export function copySimToSchema(sim: GameState, out: RoomState): void {
     ps.speed = player.speed;
     ps.activeBombs = player.activeBombs;
     ps.kickTicks = player.kickTicks;
+    ps.gunAmmo = player.gunAmmo;
+    ps.hammerUses = player.hammerUses;
+    ps.facing = player.facing;
+    // momentumDir/momentumTicks/turnTicks/actionCooldown stay sim-only: the
+    // client renders from position and never re-simulates the drift itself.
   }
 
   const liveBombIds = new Set(sim.bombs.map((b) => String(b.id)));
