@@ -4,6 +4,7 @@ import {
   BASE_SPEED,
   BOMB_FUSE_TICKS,
   EXPLOSION_DURATION_TICKS,
+  GRACE_CAP,
   GRID_HEIGHT,
   GRID_WIDTH,
   GUN_AMMO_PER_PICKUP,
@@ -15,6 +16,7 @@ import {
   MAX_BLAST_RADIUS,
   MAX_BOMB_COUNT,
   MAX_SPEED,
+  PING_CAP_MS,
   POWERUP_DROP_CHANCE,
   SKILL_ACTION_COOLDOWN_TICKS,
   SPEED_INCREMENT,
@@ -225,6 +227,10 @@ class GameImpl implements Game {
       if (!player.alive) continue;
       if (player.kickTicks > 0) player.kickTicks--;
       const input = readInput(inputs, player.id);
+      // Latency-scaled turn latitude: how far the player expects to have drifted
+      // past a junction while their turn was in flight. 0 offline (no ping).
+      const oneWaySec = Math.min(input.pingMs ?? 0, PING_CAP_MS) / 2 / 1000;
+      player.turnGrace = Math.min(GRACE_CAP, player.speed * oneWaySec);
       if (input.direction) player.facing = input.direction; // aims the skills too
       // Space is one button: while a skill is held it triggers that skill and
       // places no bombs, and it fires on the press (a held trigger would burn
@@ -479,7 +485,27 @@ class GameImpl implements Game {
     let budget = (player.speed / TICK_RATE) * budgetMult;
     const horizontal = direction === 'left' || direction === 'right';
 
-    const perp = horizontal ? player.y : player.x;
+    let perp = horizontal ? player.y : player.x;
+    // Turn onset: the new direction is perpendicular to the lane we were
+    // committed to. If a latency budget says we only just overran the junction,
+    // snap the perpendicular coordinate back onto it and turn there instead of
+    // sliding forward to the next tile (the overshoot players feel online).
+    if (player.turnGrace > EPS && player.laneDir !== null && player.laneDir !== direction) {
+      const leavingHorizontally = player.laneDir === 'left' || player.laneDir === 'right';
+      if (leavingHorizontally !== horizontal) {
+        const junction = Math.round(perp);
+        const offset = Math.abs(junction - perp);
+        if (offset > EPS && offset <= player.turnGrace + EPS) {
+          const col = horizontal ? Math.round(player.x) : junction;
+          const row = horizontal ? junction : Math.round(player.y);
+          if (this.canEnter(col, row)) {
+            if (horizontal) player.y = junction;
+            else player.x = junction;
+            perp = junction;
+          }
+        }
+      }
+    }
     const lane = this.laneAhead(player, perp, horizontal);
     if (lane === null) return true;
     const dist = Math.abs(lane - perp);
