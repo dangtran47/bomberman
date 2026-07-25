@@ -50,9 +50,17 @@ const KEEPALIVE_MS = 100;
 /** Online: measure round-trip time by echoing a ping this often. */
 const PING_INTERVAL_MS = 2000;
 
+/** Inset (px per side) of a winter block sprite inside its tile, so the floor
+ * shows through as a gap and the block reads as a raised object. */
+const BLOCK_INSET = 3;
+
+/** Drop shadow drawn under winter blocks to lift them off the floor. */
+const BLOCK_SHADOW = { color: 0x0a1a2c, alpha: 0.45, offset: 3 } as const;
+
 const DEPTH = {
   background: -1,
   floor: 0,
+  blockShadow: 0.5,
   block: 1,
   powerup: 2,
   bomb: 3,
@@ -696,14 +704,32 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
+   * Winter block sprite: the art inset inside its tile with a drop shadow, so
+   * it stands off the shaded floor even when both use the same snow/ice tile.
+   * The shadow is a child of the returned image and dies with it.
+   */
+  private addWinterBlock(col: number, row: number, ref: TexRef): Phaser.GameObjects.Image {
+    const size = TILE_SIZE - BLOCK_INSET * 2;
+    const { color, alpha, offset } = BLOCK_SHADOW;
+    const shadow = addImage(this, toX(col) + offset, toY(row) + offset, ref)
+      .setDisplaySize(size, size)
+      .setDepth(DEPTH.blockShadow)
+      .setTintFill(color)
+      .setAlpha(alpha);
+    const img = addImage(this, toX(col), toY(row), ref)
+      .setDisplaySize(size, size)
+      .setDepth(DEPTH.block);
+    img.once(Phaser.GameObjects.Events.DESTROY, () => shadow.destroy());
+    return img;
+  }
+
+  /**
    * Hard block: classic traffic cone (scaled by height, centered on the tile)
-   * or the flat winter wall stretched over the whole tile.
+   * or the flat winter wall inset on the tile with a shadow.
    */
   private addHardBlock(col: number, row: number): Phaser.GameObjects.Image {
     if (this.theme === 'winter') {
-      return addImage(this, toX(col), toY(row), TEX.winter.hardBlock)
-        .setDisplaySize(TILE_SIZE, TILE_SIZE)
-        .setDepth(DEPTH.block);
+      return this.addWinterBlock(col, row, TEX.winter.hardBlock);
     }
     const img = addImage(this, toX(col), toY(row), TEX.hardBlock).setDepth(DEPTH.block);
     return img.setScale(SPRITE_SIZE.hardBlockHeight / img.height);
@@ -882,7 +908,7 @@ export class GameScene extends Phaser.Scene {
   private softBlockRef(col: number, row: number): TexRef {
     if (this.theme !== 'winter') return TEX.softBlock;
     const visual = this.compiled?.visuals[row][col];
-    return (visual ? TEX.winter.softByVisual[visual] : undefined) ?? TEX.winter.softByVisual.snow;
+    return (visual ? TEX.winter.softByVisual[visual] : undefined) ?? TEX.winter.softByVisual.brick;
   }
 
   private reconcileSoftBlocks(state: RenderState): void {
@@ -892,11 +918,14 @@ export class GameScene extends Phaser.Scene {
         const isSoft = state.grid[row][col] === TileType.SoftBlock;
         const sprite = this.softBlockSprites.get(key);
         if (isSoft && !sprite) {
+          const ref = this.softBlockRef(col, row);
           this.softBlockSprites.set(
             key,
-            addImage(this, toX(col), toY(row), this.softBlockRef(col, row))
-              .setDisplaySize(TILE_SIZE, TILE_SIZE)
-              .setDepth(DEPTH.block),
+            this.theme === 'winter'
+              ? this.addWinterBlock(col, row, ref)
+              : addImage(this, toX(col), toY(row), ref)
+                  .setDisplaySize(TILE_SIZE, TILE_SIZE)
+                  .setDepth(DEPTH.block),
           );
         } else if (!isSoft && sprite) {
           sprite.destroy();

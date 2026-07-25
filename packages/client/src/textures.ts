@@ -92,16 +92,19 @@ export const TEX = {
     hardBlock: { key: G6, frame: 'winter_wall' },
     /** Multi-tile prop art, keyed by MapProp.visual (house spans 3x3 tiles). */
     house: { key: G7, frame: 'winter_house' },
-    /** Soft-block art keyed by the map legend's `visual` hint. */
+    /**
+     * Soft-block art keyed by the map legend's `visual` hint. Only art that
+     * reads clearly against the snow/ice floors belongs here: the atlas also
+     * ships `winter_block_snow` and `winter_block_ice_sparkle`, but those are
+     * pixel-for-pixel near-copies of `winter_floor` and `winter_floor_ice`, so
+     * using them makes walls indistinguishable from walkable lanes.
+     */
     softByVisual: {
       bottles: { key: G7, frame: 'winter_soft_bottles' },
       cans: { key: G7, frame: 'winter_soft_cans' },
       sled: { key: G7, frame: 'winter_soft_sled' },
       window: { key: G7, frame: 'winter_soft_window' },
       snowball: { key: G6, frame: 'winter_block_snowball' },
-      snow: { key: G6, frame: 'winter_block_snow' },
-      ice: { key: G6, frame: 'winter_block_ice' },
-      iceSparkle: { key: G6, frame: 'winter_block_ice_sparkle' },
       brick: { key: G6, frame: 'winter_block_brick' },
     } as Record<string, TexRef>,
   },
