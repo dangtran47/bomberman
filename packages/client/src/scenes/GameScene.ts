@@ -38,6 +38,18 @@ export type GameSceneData =
   | { mode: 'online'; connection: GameRoomConnection };
 
 export const HUD_HEIGHT = 40;
+/**
+ * Gap (px) between the HUD bar and the first grid row. Feet sit at the cell
+ * center, so a top-row character's head pokes ~20px above the grid; this margin
+ * gives that head room instead of crowding the HUD. Also framed by a border.
+ */
+export const GRID_TOP_MARGIN = 24;
+/**
+ * Thickness (px) of the ornamental frame band drawn around the play field, and
+ * therefore the grid's inset from the left/right/bottom canvas edges. The top
+ * band fits inside GRID_TOP_MARGIN, so only the other three sides need slack.
+ */
+export const GRID_FRAME_WIDTH = 18;
 
 const HUMAN_ID = 'p0';
 const PLAYER_IDS = ['p0', 'p1', 'p2', 'p3'];
@@ -54,27 +66,60 @@ const PING_INTERVAL_MS = 2000;
  * shows through as a gap and the block reads as a raised object. */
 const BLOCK_INSET = 3;
 
-/** Drop shadow drawn under winter blocks to lift them off the floor. */
-const BLOCK_SHADOW = { color: 0x0a1a2c, alpha: 0.45, offset: 3 } as const;
+/**
+ * Winter art that reads as a free-standing object (lifted like a character for a
+ * 3D stand). Flat wall/panel art — the stone wall, window, brick — stays flat on
+ * its tile; lifting those looks like they float. Keyed by atlas frame.
+ */
+const RAISED_BLOCK_FRAMES = new Set([
+  'winter_soft_bottles',
+  'winter_soft_cans',
+  'winter_soft_sled',
+  'winter_block_snowball',
+]);
 
 const DEPTH = {
   background: -1,
   floor: 0,
-  blockShadow: 0.5,
-  block: 1,
-  powerup: 2,
-  bomb: 3,
-  explosion: 4,
-  player: 5,
-  hud: 10,
-  overlay: 20,
+  /** Flat on-tile art (floor, flat wall/panel blocks, props): never occludes
+   * neighbours, so it sits at the bottom of the stack under all raised art. */
+  flat: 1,
+  /** Field border: above the flat perimeter walls it hides, below every raised
+   * object (which is interior, so the frame must not draw over it). */
+  frame: 5,
+  // Raised world objects (raised blocks, bombs, powerups, players) are y-sorted
+  // by row via worldDepth() and land in the band (row+1)*ROW_DEPTH .. + layer.
+  /** Transient effects (explosions, tracers, flashes, skill badges): drawn on
+   * top of every world object. */
+  effect: 900,
+  hud: 1000,
+  overlay: 2000,
 } as const;
 
 /**
- * Players are depth-sorted by grid y so lower players draw over higher ones
- * (their heads poke into the tile above). Scaled down to stay below DEPTH.hud.
+ * Global y-sort granularity: one grid row's worth of depth. Larger than any
+ * same-cell WORLD_LAYER offset, so a lower row (bigger y) ALWAYS draws over the
+ * row above it. This is what lets a block/bomb/player standing in a lower tile
+ * occlude whatever pokes down into it from the tile above.
  */
-const PLAYER_DEPTH_PER_ROW = 0.1;
+const ROW_DEPTH = 10;
+/** Same-cell draw order for co-located raised objects (offsets < ROW_DEPTH). */
+const WORLD_LAYER = { block: 1, powerup: 2, bomb: 3, player: 4 } as const;
+/**
+ * Depth for a raised world object at grid `row` (may be fractional for smooth
+ * player motion). Lower rows get a strictly larger depth than the row above,
+ * across every object type — one global y-sort instead of per-type layers.
+ */
+function worldDepth(row: number, layer: number): number {
+  return (row + 1) * ROW_DEPTH + layer;
+}
+/**
+ * Vertical offset (px, + = down) of the bottom-anchored sprite from its cell
+ * center. Seats the feet a bit below center — grounded, but not on the tile's
+ * bottom edge (TILE_SIZE/2 = 24, the old too-low look). 0 puts feet at dead
+ * center (too high/floaty); the shadow tracks this same offset.
+ */
+const PLAYER_FOOT_OFFSET = 12;
 /** Bomb pulse tween grows the sprite to this multiple of its base scale. */
 const BOMB_PULSE = 1.15;
 /** Max random tilt (radians) applied to each explosion pom, visual only. */
@@ -109,6 +154,54 @@ const HAMMER_TARGET = {
   width: 4,
   /** Inset of each X arm from the tile edge. */
   inset: 12,
+} as const;
+/**
+ * Foot shadow: a soft dark ellipse anchored under the local player's rendered
+ * sprite, tracking the same lerp-smoothed position the sprite uses. Anchoring to
+ * the sprite (not the logical cell center) keeps the shadow glued to the feet
+ * online — anchoring to toX/toY of player.x/y snaps to the logical target while
+ * the sprite lerps behind, making the shadow look like it runs ahead.
+ */
+const FOOT_SHADOW = {
+  color: 0x000000,
+  /** Ellipse radii (px) at the cell center. */
+  radiusX: 14,
+  radiusY: 5,
+  /** Fine vertical nudge (px, + = down) to seat the ellipse on the shoe base. */
+  footDrop: 0,
+  /** Fill opacity. */
+  fillAlpha: 0.28,
+} as const;
+/**
+ * Ornamental frame around the play field, separating it from the HUD and the
+ * canvas edges: four mitered dark-stone bands shaded as if lit from the top
+ * left, block seams on the tile grid, brass trim on the inner edge, corner
+ * plates and rivets. Kept dark and desaturated so it frames the warm floor
+ * instead of competing with it.
+ */
+const GRID_FRAME = {
+  width: GRID_FRAME_WIDTH,
+  /** Per-side band colors; top lightest (lit), bottom darkest. */
+  top: 0x4e3c2f,
+  left: 0x4a3a2d,
+  right: 0x36281f,
+  bottom: 0x2a1f18,
+  /** Stone seam lines across the bands, spaced one tile apart. */
+  seam: 0x140e0a,
+  /** Hairline width, the near-black canvas edge, and the recessed inner edge. */
+  hairline: 2,
+  outline: 0x0a0705,
+  innerLine: 0x100b08,
+  /** Warm 1px gleam just inside the outer edge on the lit (top/left) sides. */
+  gleam: 0x6b5340,
+  /** Brass trim line at the inner edge, and the corner plate fill. */
+  trim: 0xc79a52,
+  plate: 0x5c4635,
+  /** Brass rivet: body, ring and gleam highlight. */
+  rivetRadius: 3.5,
+  rivetFill: 0xd9a862,
+  rivetRing: 0x2a1809,
+  rivetGleam: 0xfff0d0,
 } as const;
 /** Gun tracer: color, thickness and fade time of the shot line. */
 const TRACER_COLOR = 0xffe040;
@@ -151,8 +244,9 @@ const DIRECTION_KEYS: [key: string, dir: Direction][] = [
 ];
 
 const cellKey = (col: number, row: number): string => `${col},${row}`;
-const toX = (col: number): number => col * TILE_SIZE + TILE_SIZE / 2;
-const toY = (row: number): number => HUD_HEIGHT + row * TILE_SIZE + TILE_SIZE / 2;
+const toX = (col: number): number => GRID_FRAME_WIDTH + col * TILE_SIZE + TILE_SIZE / 2;
+const toY = (row: number): number =>
+  HUD_HEIGHT + GRID_TOP_MARGIN + row * TILE_SIZE + TILE_SIZE / 2;
 
 /**
  * Plain snapshot shape the render path consumes each tick/frame. The offline
@@ -262,6 +356,8 @@ export class GameScene extends Phaser.Scene {
   private myPointerBob = { y: 0 };
   /** Crosshair over the tile a held hammer would strike; null until armed. */
   private hammerTarget: Phaser.GameObjects.Graphics | null = null;
+  /** Soft shadow under the local player's feet, grounding them to their cell. */
+  private myFootShadow: Phaser.GameObjects.Graphics | null = null;
   /** Overhead skill icons per player, keyed by SKILL_BADGES entry. */
   private skillBadges = new Map<string, Map<string, SkillBadge>>();
   /** Previous-frame badge values per player, to detect a 0 -> >0 pickup. */
@@ -311,6 +407,7 @@ export class GameScene extends Phaser.Scene {
     this.myPointer = null;
     this.myPointerBob.y = 0;
     this.hammerTarget = null;
+    this.myFootShadow = null;
     this.skillBadges.clear();
     this.prevSkillValues.clear();
     this.softBlockSprites.clear();
@@ -749,11 +846,15 @@ export class GameScene extends Phaser.Scene {
   // --- rendering ---
 
   private drawStaticGrid(state: RenderState): void {
-    // Desert backdrop under the grid only; the HUD bar above stays solid dark.
-    addImage(this, 0, HUD_HEIGHT, TEX.background)
+    // Backdrop spans the top margin too, so a top-row head pokes onto floor
+    // rather than the HUD bar. The HUD bar above stays solid dark.
+    const fieldTop = HUD_HEIGHT;
+    const fieldHeight = GRID_TOP_MARGIN + GRID_HEIGHT * TILE_SIZE + GRID_FRAME_WIDTH;
+    addImage(this, 0, fieldTop, TEX.background)
       .setOrigin(0, 0)
-      .setDisplaySize(this.scale.width, GRID_HEIGHT * TILE_SIZE)
+      .setDisplaySize(this.scale.width, fieldHeight)
       .setDepth(DEPTH.background);
+    this.drawFieldFrame(fieldTop, fieldTop + fieldHeight);
 
     // Prop footprints are drawn as one sprite, so their per-cell wall art is skipped.
     const propCells = new Set<string>();
@@ -783,7 +884,7 @@ export class GameScene extends Phaser.Scene {
         ref,
       )
         .setDisplaySize(prop.cols * TILE_SIZE, prop.rows * TILE_SIZE)
-        .setDepth(DEPTH.block);
+        .setDepth(DEPTH.flat);
     }
   }
 
@@ -796,22 +897,23 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Winter block sprite: the art inset inside its tile with a drop shadow, so
-   * it stands off the shaded floor even when both use the same snow/ice tile.
-   * The shadow is a child of the returned image and dies with it.
+   * Winter block sprite. Free-standing object art (RAISED_BLOCK_FRAMES) renders
+   * like a character: bottom-anchored on the ground line (cell center +
+   * PLAYER_FOOT_OFFSET) so it rises upward and pokes into the tile above for a 3D
+   * stand. Flat wall/panel art sits centered on its tile. No shadow — only
+   * characters cast one.
    */
   private addWinterBlock(col: number, row: number, ref: TexRef): Phaser.GameObjects.Image {
     const size = TILE_SIZE - BLOCK_INSET * 2;
-    const { color, alpha, offset } = BLOCK_SHADOW;
-    const shadow = addImage(this, toX(col) + offset, toY(row) + offset, ref)
-      .setDisplaySize(size, size)
-      .setDepth(DEPTH.blockShadow)
-      .setTintFill(color)
-      .setAlpha(alpha);
+    const raised = RAISED_BLOCK_FRAMES.has(ref.frame);
     const img = addImage(this, toX(col), toY(row), ref)
       .setDisplaySize(size, size)
-      .setDepth(DEPTH.block);
-    img.once(Phaser.GameObjects.Events.DESTROY, () => shadow.destroy());
+      // Raised art y-sorts with bombs/players; flat wall/panel art stays low.
+      .setDepth(raised ? worldDepth(row, WORLD_LAYER.block) : DEPTH.flat);
+    if (raised) {
+      // Bottom-anchored on the player's ground line; art rises and pokes above.
+      img.setOrigin(0.5, 1).setY(toY(row) + PLAYER_FOOT_OFFSET);
+    }
     return img;
   }
 
@@ -823,7 +925,8 @@ export class GameScene extends Phaser.Scene {
     if (this.theme === 'winter') {
       return this.addWinterBlock(col, row, TEX.winter.hardBlock);
     }
-    const img = addImage(this, toX(col), toY(row), TEX.hardBlock).setDepth(DEPTH.block);
+    // Flat depth so the field frame can hide the perimeter cones' outer faces.
+    const img = addImage(this, toX(col), toY(row), TEX.hardBlock).setDepth(DEPTH.flat);
     return img.setScale(SPRITE_SIZE.hardBlockHeight / img.height);
   }
 
@@ -838,7 +941,7 @@ export class GameScene extends Phaser.Scene {
     if (col < 0 || col >= GRID_WIDTH || row < 0 || row >= GRID_HEIGHT) return;
     const flash = this.add
       .rectangle(toX(col), toY(row), TILE_SIZE, TILE_SIZE, color, 0.8)
-      .setDepth(DEPTH.explosion);
+      .setDepth(DEPTH.effect);
     this.tweens.add({
       targets: flash,
       alpha: 0,
@@ -866,7 +969,7 @@ export class GameScene extends Phaser.Scene {
       .line(0, 0, toX(col), toY(row), toX(endCol), toY(endRow), TRACER_COLOR)
       .setOrigin(0, 0)
       .setLineWidth(TRACER_WIDTH)
-      .setDepth(DEPTH.explosion);
+      .setDepth(DEPTH.effect);
     this.tweens.add({
       targets: tracer,
       alpha: 0,
@@ -880,10 +983,10 @@ export class GameScene extends Phaser.Scene {
     for (const player of state.players) {
       // Character index (from picker online, slot offline) selects the skin.
       const ref = TEX.players[this.characterByPlayer.get(player.id) ?? 0];
-      // Anchored bottom-center at the tile bottom (classic Bomberman look).
-      const sprite = addImage(this, toX(player.x), toY(player.y) + TILE_SIZE / 2, ref)
+      // Bottom-center anchored, feet at the cell center for a 3D look.
+      const sprite = addImage(this, toX(player.x), toY(player.y) + PLAYER_FOOT_OFFSET, ref)
         .setOrigin(0.5, 1)
-        .setDepth(DEPTH.player);
+        .setDepth(worldDepth(player.y, WORLD_LAYER.player));
       sprite.setScale(SPRITE_SIZE.playerHeight / sprite.height);
       this.playerSprites.set(player.id, sprite);
     }
@@ -895,9 +998,9 @@ export class GameScene extends Phaser.Scene {
       const sprite = this.playerSprites.get(player.id);
       if (!sprite) continue;
       const tx = toX(player.x);
-      const ty = toY(player.y) + TILE_SIZE / 2; // bottom-anchored
+      const ty = toY(player.y) + PLAYER_FOOT_OFFSET; // feet at cell center
       sprite.setPosition(sprite.x + (tx - sprite.x) * lerp, sprite.y + (ty - sprite.y) * lerp);
-      sprite.setDepth(DEPTH.player + player.y * PLAYER_DEPTH_PER_ROW);
+      sprite.setDepth(worldDepth(player.y, WORLD_LAYER.player));
       sprite.setAlpha(player.alive ? 1 : 0.3); // dead players linger as ghosts
       // Kick active: solid cyan tint; over the last warning ticks blink to red.
       const warning = player.kickTicks > 0 && player.kickTicks <= KICK_WARNING_TICKS;
@@ -914,7 +1017,10 @@ export class GameScene extends Phaser.Scene {
         const place = this.myPointerPlacement(sprite);
         this.myPointer.setPosition(sprite.x, place.y).setRotation(place.flip ? Math.PI : 0);
       }
-      if (player.id === this.myId) this.updateHammerTarget(player);
+      if (player.id === this.myId) {
+        this.updateHammerTarget(player);
+        this.updateMyFootShadow(player, sprite);
+      }
     }
   }
 
@@ -938,10 +1044,142 @@ export class GameScene extends Phaser.Scene {
     this.hammerTarget.setVisible(true).setPosition(toX(col), toY(row));
   }
 
+  /**
+   * Moves the foot shadow under the local player's rendered sprite, tracking the
+   * same lerp-smoothed position the sprite uses so the shadow stays glued to the
+   * feet instead of snapping ahead to the logical cell. Hidden once dead.
+   */
+  private updateMyFootShadow(me: RenderPlayer, sprite: Phaser.GameObjects.Image): void {
+    if (!me.alive) {
+      this.myFootShadow?.setVisible(false);
+      return;
+    }
+    if (!this.myFootShadow) this.myFootShadow = this.createFootShadow();
+    this.myFootShadow.setVisible(true).setPosition(sprite.x, sprite.y + FOOT_SHADOW.footDrop);
+  }
+
+  /**
+   * Ornamental frame filling the margin around the play field: mitered bands
+   * shaded as if lit from the top-left, masonry seams on the tile grid, corner
+   * plates over the miter joints, brass trim at the inner edge and rivets. Drawn
+   * above the blocks (the perimeter is hard blocks, which would otherwise hide
+   * three sides) but below players, so top-row heads poking into the top margin
+   * still render over it.
+   */
+  private drawFieldFrame(top: number, bottom: number): void {
+    const { width: t, hairline: hl } = GRID_FRAME;
+    const right = this.scale.width;
+    const g = this.add.graphics().setDepth(DEPTH.frame);
+    const band = (color: number, points: number[][]): void => {
+      g.fillStyle(color, 1);
+      g.fillPoints(
+        points.map(([x, y]) => new Phaser.Geom.Point(x, y)),
+        true
+      );
+    };
+    band(GRID_FRAME.top, [
+      [0, top],
+      [right, top],
+      [right - t, top + t],
+      [t, top + t],
+    ]);
+    band(GRID_FRAME.bottom, [
+      [t, bottom - t],
+      [right - t, bottom - t],
+      [right, bottom],
+      [0, bottom],
+    ]);
+    band(GRID_FRAME.left, [
+      [0, top],
+      [t, top + t],
+      [t, bottom - t],
+      [0, bottom],
+    ]);
+    band(GRID_FRAME.right, [
+      [right, top],
+      [right, bottom],
+      [right - t, bottom - t],
+      [right - t, top + t],
+    ]);
+    // Stone seams, one per tile boundary, so the frame reads as masonry and its
+    // rhythm lines up with the grid inside it.
+    g.lineStyle(1, GRID_FRAME.seam, 1);
+    for (let col = 1; col < GRID_WIDTH; col++) {
+      const x = t + col * TILE_SIZE;
+      g.lineBetween(x, top, x, top + t);
+      g.lineBetween(x, bottom - t, x, bottom);
+    }
+    for (let row = 1; row < GRID_HEIGHT; row++) {
+      const y = top + GRID_TOP_MARGIN + row * TILE_SIZE;
+      g.lineBetween(0, y, t, y);
+      g.lineBetween(right - t, y, right, y);
+    }
+    // Corner plates cover the miter joints, where the seams would collide.
+    g.fillStyle(GRID_FRAME.plate, 1);
+    g.lineStyle(1, GRID_FRAME.trim, 1);
+    for (const [x, y] of [
+      [0, top],
+      [right - t, top],
+      [0, bottom - t],
+      [right - t, bottom - t],
+    ]) {
+      g.fillRect(x, y, t, t);
+      g.strokeRect(x, y, t, t);
+    }
+    // Outer hairline is inset by half its width so the canvas doesn't clip it.
+    g.lineStyle(hl, GRID_FRAME.outline, 1);
+    g.strokeRect(hl / 2, top + hl / 2, right - hl, bottom - top - hl);
+    // Warm gleam on the lit sides, then brass trim and a shadow line at the
+    // inner edge so the field reads as recessed behind the frame.
+    g.lineStyle(1, GRID_FRAME.gleam, 1);
+    g.lineBetween(hl, top + hl + 1, right - hl, top + hl + 1);
+    g.lineBetween(hl + 1, top + hl, hl + 1, bottom - hl);
+    g.lineStyle(1, GRID_FRAME.trim, 1);
+    g.strokeRect(t - 2, top + t - 2, right - 2 * t + 4, bottom - top - 2 * t + 4);
+    g.lineStyle(hl, GRID_FRAME.innerLine, 1);
+    g.strokeRect(t - hl / 2, top + t - hl / 2, right - 2 * t + hl, bottom - top - 2 * t + hl);
+
+    const mid = t / 2;
+    const midX = right / 2;
+    const midY = (top + bottom) / 2;
+    for (const [x, y] of [
+      [mid, top + mid],
+      [right - mid, top + mid],
+      [mid, bottom - mid],
+      [right - mid, bottom - mid],
+      [midX, top + mid],
+      [midX, bottom - mid],
+      [mid, midY],
+      [right - mid, midY],
+    ]) {
+      this.drawRivet(g, x, y);
+    }
+  }
+
+  private drawRivet(g: Phaser.GameObjects.Graphics, x: number, y: number): void {
+    const { rivetRadius: r, rivetFill, rivetRing, rivetGleam } = GRID_FRAME;
+    g.fillStyle(rivetRing, 0.85);
+    g.fillCircle(x, y, r + 1);
+    g.fillStyle(rivetFill, 1);
+    g.fillCircle(x, y, r);
+    g.fillStyle(rivetGleam, 0.9);
+    g.fillCircle(x - r * 0.35, y - r * 0.35, r * 0.35);
+  }
+
+  private createFootShadow(): Phaser.GameObjects.Graphics {
+    const { color, radiusX, radiusY, fillAlpha } = FOOT_SHADOW;
+    // Drawn centered on (0,0); setPosition places it under the feet. Sits on the
+    // floor, beneath blocks, bombs and players.
+    const g = this.add.graphics().setDepth(DEPTH.floor + 0.1);
+    g.fillStyle(color, fillAlpha);
+    g.fillEllipse(0, 0, radiusX * 2, radiusY * 2);
+    return g;
+  }
+
   private createHammerTarget(): Phaser.GameObjects.Graphics {
     const { color, width, inset } = HAMMER_TARGET;
     const arm = TILE_SIZE / 2 - inset;
-    const g = this.add.graphics().setDepth(DEPTH.player - 0.5);
+    const g = this.add.graphics().setDepth(DEPTH.effect);
     g.lineStyle(width, color, 0.9);
     g.beginPath();
     g.moveTo(-arm, -arm);
@@ -998,7 +1236,7 @@ export class GameScene extends Phaser.Scene {
       const x = sprite.x + (i - (active.length - 1) / 2) * SKILL_BADGE_STEP;
       let badge = badges.get(skill.key);
       if (!badge) {
-        const icon = addImage(this, x, rowY, TEX.powerup[skill.type]).setDepth(DEPTH.player + 1);
+        const icon = addImage(this, x, rowY, TEX.powerup[skill.type]).setDepth(DEPTH.effect);
         icon.setScale(SKILL_BADGE_HEIGHT / icon.height);
         const count = skill.showCount
           ? this.add
@@ -1009,7 +1247,7 @@ export class GameScene extends Phaser.Scene {
                 resolution: TEXT_RES,
               })
               .setOrigin(0.5, 0.5)
-              .setDepth(DEPTH.player + 1)
+              .setDepth(DEPTH.effect)
           : null;
         badge = { icon, count };
         badges.set(skill.key, badge);
@@ -1065,7 +1303,7 @@ export class GameScene extends Phaser.Scene {
               ? this.addWinterBlock(col, row, ref)
               : addImage(this, toX(col), toY(row), ref)
                   .setDisplaySize(TILE_SIZE, TILE_SIZE)
-                  .setDepth(DEPTH.block),
+                  .setDepth(DEPTH.flat),
           );
         } else if (!isSoft && sprite) {
           sprite.destroy();
@@ -1094,6 +1332,8 @@ export class GameScene extends Phaser.Scene {
         if (existing.col !== bomb.col || existing.row !== bomb.row) {
           existing.col = bomb.col;
           existing.row = bomb.row;
+          // Re-sort as it crosses rows so it occludes / is occluded correctly.
+          existing.sprite.setDepth(worldDepth(bomb.row, WORLD_LAYER.bomb));
           this.tweens.add({
             targets: existing.sprite,
             x: toX(bomb.col),
@@ -1105,7 +1345,9 @@ export class GameScene extends Phaser.Scene {
         continue;
       }
       if (this.mode === 'online') audio.bombPlace(); // offline plays via bombPlaced event
-      const sprite = addImage(this, toX(bomb.col), toY(bomb.row), TEX.bomb).setDepth(DEPTH.bomb);
+      const sprite = addImage(this, toX(bomb.col), toY(bomb.row), TEX.bomb).setDepth(
+        worldDepth(bomb.row, WORLD_LAYER.bomb),
+      );
       const base = SPRITE_SIZE.bombHeight / sprite.height;
       sprite.setScale(base);
       this.tweens.add({
@@ -1137,7 +1379,7 @@ export class GameScene extends Phaser.Scene {
       const sprite = addImage(this, toX(cell.col), toY(cell.row), ref)
         .setDisplaySize(TILE_SIZE, TILE_SIZE)
         .setRotation(Phaser.Math.FloatBetween(-EXPLOSION_MAX_TILT, EXPLOSION_MAX_TILT))
-        .setDepth(DEPTH.explosion);
+        .setDepth(DEPTH.effect);
       this.explosionSprites.set(key, sprite);
     }
     // One boom per frame no matter how many cells appeared (offline: event-driven).
@@ -1167,7 +1409,9 @@ export class GameScene extends Phaser.Scene {
     for (const [key, { ref }] of live) {
       if (this.powerupSprites.has(key)) continue;
       const [col, row] = key.split(',').map(Number);
-      const sprite = addImage(this, toX(col), toY(row), ref).setDepth(DEPTH.powerup);
+      const sprite = addImage(this, toX(col), toY(row), ref).setDepth(
+        worldDepth(row, WORLD_LAYER.powerup),
+      );
       sprite.setScale(SPRITE_SIZE.powerupHeight / sprite.height);
       this.tweens.add({
         targets: sprite,

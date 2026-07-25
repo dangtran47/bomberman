@@ -9,6 +9,10 @@ import {
   MAX_BLAST_RADIUS,
   MAX_BOMB_COUNT,
   MAX_SPEED,
+  POWERUP_TYPE_COUNT,
+  POWERUP_WEIGHTS,
+  POWERUP_WEIGHT_TOTAL,
+  powerupTypeForRoll,
 } from '../src/constants';
 import { createGame } from '../src/game';
 import type { Game, GameEvent } from '../src/game';
@@ -18,7 +22,7 @@ import { PowerupType, TileType } from '../src/types';
 import type { Direction, PlayerInput } from '../src/types';
 
 // Seeds mined against createRng so the game's FIRST powerup roll is known.
-// Type roll is Math.floor(rng() * POWERUP_TYPE_COUNT) with POWERUP_TYPE_COUNT=6:
+// Type roll goes through powerupTypeForRoll (weighted by POWERUP_WEIGHTS):
 // seed 7 -> drop ExtraBomb, seed 19 -> drop BiggerBlast, seed 15 -> drop Speed,
 // seed 1 -> no drop (first roll 0.627 >= POWERUP_DROP_CHANCE).
 const SEED_EXTRA_BOMB = 7;
@@ -534,5 +538,30 @@ describe('determinism', () => {
     }
     expect(g1.state).toEqual(g2.state);
     expect(events1).toEqual(events2);
+  });
+});
+
+describe('powerup drop weights', () => {
+  it('has one weight per powerup type', () => {
+    expect(POWERUP_WEIGHTS).toHaveLength(POWERUP_TYPE_COUNT);
+  });
+
+  it('maps a roll to the weighted type, covering every bucket', () => {
+    // Bucket i spans [cum(i), cum(i+1)) / total; sample the middle of each.
+    let cum = 0;
+    for (let i = 0; i < POWERUP_WEIGHTS.length; i++) {
+      const mid = (cum + POWERUP_WEIGHTS[i] / 2) / POWERUP_WEIGHT_TOTAL;
+      expect(powerupTypeForRoll(mid)).toBe(i);
+      cum += POWERUP_WEIGHTS[i];
+    }
+    expect(powerupTypeForRoll(0)).toBe(0);
+    expect(powerupTypeForRoll(0.999999)).toBe(POWERUP_WEIGHTS.length - 1);
+  });
+
+  it('drops gun and hammer far less often than bomb and blast upgrades', () => {
+    expect(POWERUP_WEIGHTS[PowerupType.Gun]).toBeLessThan(POWERUP_WEIGHTS[PowerupType.ExtraBomb]);
+    expect(POWERUP_WEIGHTS[PowerupType.Hammer]).toBeLessThan(
+      POWERUP_WEIGHTS[PowerupType.BiggerBlast],
+    );
   });
 });

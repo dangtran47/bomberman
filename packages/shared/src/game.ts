@@ -16,13 +16,13 @@ import {
   MAX_BOMB_COUNT,
   MAX_SPEED,
   POWERUP_DROP_CHANCE,
-  POWERUP_TYPE_COUNT,
   SKILL_ACTION_COOLDOWN_TICKS,
   SPEED_INCREMENT,
   SUDDEN_DEATH_INTERVAL_TICKS,
   SUDDEN_DEATH_START_TICKS,
   TICK_RATE,
   kickSlideInterval,
+  powerupTypeForRoll,
 } from './constants';
 import { SPAWN_POINTS, generateMap } from './map';
 import { compileMap, getMapDef } from './maps';
@@ -382,7 +382,7 @@ class GameImpl implements Game {
     s.grid[row][col] = TileType.Floor;
     events.push({ type: 'blockDestroyed', col, row });
     if (this.rng() < POWERUP_DROP_CHANCE) {
-      const type = Math.floor(this.rng() * POWERUP_TYPE_COUNT) as PowerupType;
+      const type = powerupTypeForRoll(this.rng()) as PowerupType;
       // Dropped on the block's own tile, so nothing can pick it up this tick.
       s.powerups.push({ col, row, type });
       events.push({ type: 'powerupSpawned', col, row, powerupType: type });
@@ -613,7 +613,7 @@ class GameImpl implements Game {
             destroyed.push({ col, row });
             s.grid[row][col] = TileType.Floor;
             if (this.rng() < POWERUP_DROP_CHANCE) {
-              const type = Math.floor(this.rng() * POWERUP_TYPE_COUNT) as PowerupType;
+              const type = powerupTypeForRoll(this.rng()) as PowerupType;
               spawned.push({ col, row, type });
             }
             break;

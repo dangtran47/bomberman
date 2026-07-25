@@ -20,6 +20,24 @@ export const SOFT_BLOCK_DENSITY = 0.75; // fraction of eligible floor tiles that
 export const POWERUP_DROP_CHANCE = 0.3;
 export const POWERUP_TYPE_COUNT = 6;
 
+/**
+ * Relative drop weights per PowerupType, in enum order
+ * (ExtraBomb, BiggerBlast, Speed, Kick, Gun, Hammer).
+ * Bomb count and blast radius are the common drops; gun and hammer are rare.
+ */
+export const POWERUP_WEIGHTS = [6, 6, 3, 3, 1, 1] as const;
+export const POWERUP_WEIGHT_TOTAL = POWERUP_WEIGHTS.reduce((sum, w) => sum + w, 0);
+
+/** Maps a [0, 1) roll to a PowerupType index using POWERUP_WEIGHTS. One roll, so RNG use is unchanged. */
+export function powerupTypeForRoll(roll: number): number {
+  let remaining = roll * POWERUP_WEIGHT_TOTAL;
+  for (let i = 0; i < POWERUP_WEIGHTS.length; i++) {
+    remaining -= POWERUP_WEIGHTS[i];
+    if (remaining < 0) return i;
+  }
+  return POWERUP_WEIGHTS.length - 1;
+}
+
 export const CHARACTER_COUNT = 6;
 
 export const KICK_DURATION_TICKS = 300; // 15s at 20tps
