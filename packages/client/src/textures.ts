@@ -4,6 +4,13 @@ import { PowerupType } from '@bomberman/shared';
 /** Pixel size of one grid tile. */
 export const TILE_SIZE = 48;
 
+/**
+ * Text render resolution. The canvas is upscaled by Phaser.Scale.FIT on
+ * hi-DPI/large displays, so rendering text at 2-3x keeps it crisp instead of
+ * blurry. Every `add.text` style should set `resolution: TEXT_RES`.
+ */
+export const TEXT_RES = Math.min(3, Math.max(2, Math.ceil(window.devicePixelRatio || 1) + 1));
+
 /** Atlas page texture keys; each page is loaded from `assets/<key>.png`. */
 export const ATLAS_PAGES = [
   'gameplay',
@@ -11,6 +18,7 @@ export const ATLAS_PAGES = [
   'gameplay3',
   'gameplay4',
   'gameplay5',
+  'gameplay6',
 ] as const;
 
 /** URL of the libGDX atlas descriptor (served from public/assets). */
@@ -25,6 +33,12 @@ export interface TexRef {
 const G1 = 'gameplay';
 const G2 = 'gameplay2';
 const G3 = 'gameplay3';
+const G4 = 'gameplay4';
+const G5 = 'gameplay5';
+const G6 = 'gameplay6';
+
+/** Tint applied to kick-related visuals (cyan). */
+export const KICK_TINT = 0x40e0ff;
 
 /**
  * Central registry of sprite references into the Bomb-It atlas. All scenes
@@ -39,6 +53,17 @@ export const TEX = {
     { key: G3, frame: 'player_blue' },
     { key: G3, frame: 'player_orange' },
     { key: G3, frame: 'player_black' },
+    { key: G3, frame: 'player_purple' },
+    { key: G5, frame: 'player_green' },
+  ],
+  /** Color swatch tiles for the lobby character picker, same order as players. */
+  characterTiles: [
+    { key: G2, frame: 'tile_pink' },
+    { key: G2, frame: 'tile_blue' },
+    { key: G2, frame: 'tile_orange' },
+    { key: G1, frame: 'tile_black' },
+    { key: G2, frame: 'tile_purple' },
+    { key: G2, frame: 'tile_green' },
   ],
   bomb: { key: G1, frame: 'bomb' },
   explosion: { key: G1, frame: 'pom_yellow' },
@@ -48,8 +73,31 @@ export const TEX = {
     [PowerupType.ExtraBomb]: { key: G1, frame: 'bonus_bomb' },
     [PowerupType.BiggerBlast]: { key: G1, frame: 'bonus_hand' },
     [PowerupType.Speed]: { key: G1, frame: 'whistle' },
+    // Rendered tinted cyan (KICK_TINT) to read as the kick skill.
+    [PowerupType.Kick]: { key: G1, frame: 'bomb' },
   } as Record<PowerupType, TexRef>,
+  /**
+   * Winter theme extracted from the Bomb-It ice level. Blocks are 62x80:
+   * a 62x62 opaque tile (snow floor baked in) plus an 18px transparent
+   * overhang; draw anchored to the tile bottom (origin y = 1) and depth-sort
+   * by row so overhangs overlap the cell above, on top of `winter.floor`.
+   */
+  winter: {
+    floor: { key: G6, frame: 'winter_floor' },
+    floorAlt: { key: G6, frame: 'winter_floor2' },
+    hardBlock: { key: G6, frame: 'winter_wall' },
+    softBlocks: [
+      { key: G6, frame: 'winter_block_cans' },
+      { key: G6, frame: 'winter_block_sled' },
+      { key: G6, frame: 'winter_block_window' },
+      { key: G6, frame: 'winter_block_ice' },
+      { key: G6, frame: 'winter_block_snowball' },
+    ],
+    /** 3x3-tile centerpiece decoration (186x204, 18px top overhang). */
+    lodge: { key: G6, frame: 'winter_lodge' },
+  },
   background: { key: G2, frame: 'background' },
+  leaderboard: { key: G4, frame: 'background_leaderboard' },
   title: { key: G1, frame: 'title' },
   youWin: { key: G2, frame: 'you_win' },
   youLose: { key: G1, frame: 'you_lose' },

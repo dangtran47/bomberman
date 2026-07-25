@@ -29,6 +29,35 @@ describe('copySimToSchema', () => {
     expect(p0.blastRadius).toBe(simP0.blastRadius);
     expect(p0.speed).toBe(simP0.speed);
     expect(p0.activeBombs).toBe(simP0.activeBombs);
+    expect(p0.kickTicks).toBe(simP0.kickTicks);
+  });
+
+  it('mirrors kickTicks in place', () => {
+    const game = createGame({ seed: 42, playerIds: ['p0', 'p1'] });
+    const state = makeRoomState(['p0', 'p1']);
+    game.state.players[0].kickTicks = 7;
+    copySimToSchema(game.state, state);
+    expect(state.players.get('p0')!.kickTicks).toBe(7);
+  });
+
+  it('updates bomb col/row when a sliding bomb moves', () => {
+    const game = createGame({ seed: 42, playerIds: ['p0', 'p1'] });
+    const state = makeRoomState(['p0', 'p1']);
+    game.tick({ p0: { direction: null, placeBomb: true } });
+    copySimToSchema(game.state, state);
+    const simBomb = game.state.bombs[0];
+    const key = String(simBomb.id);
+    const before = { col: state.bombs.get(key)!.col, row: state.bombs.get(key)!.row };
+
+    // Simulate a slide: move the sim bomb, re-mirror, expect the schema to follow.
+    simBomb.col += 2;
+    simBomb.row += 1;
+    simBomb.slideInterval = 2;
+    copySimToSchema(game.state, state);
+    const bs = state.bombs.get(key)!;
+    expect(bs.col).toBe(before.col + 2);
+    expect(bs.row).toBe(before.row + 1);
+    expect(bs.slideInterval).toBe(2);
   });
 
   it('mirrors bombs by id and updates their fuse in place', () => {

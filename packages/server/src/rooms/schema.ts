@@ -16,6 +16,10 @@ export class PlayerSchema extends Schema {
   @type('number') speed = 3;
   @type('number') activeBombs = 0;
   @type('boolean') isBot = false;
+  @type('number') character = 0;
+  @type('number') kickTicks = 0;
+  @type('number') wins = 0;
+  @type('number') placement = 0;
 }
 
 export class BombSchema extends Schema {
@@ -25,6 +29,7 @@ export class BombSchema extends Schema {
   @type('string') ownerId = '';
   @type('number') fuseTicks = 0;
   @type('number') blastRadius = 1;
+  @type('number') slideInterval = 0;
 }
 
 export class ExplosionSchema extends Schema {
@@ -76,6 +81,7 @@ export function copySimToSchema(sim: GameState, out: RoomState): void {
     ps.blastRadius = player.blastRadius;
     ps.speed = player.speed;
     ps.activeBombs = player.activeBombs;
+    ps.kickTicks = player.kickTicks;
   }
 
   const liveBombIds = new Set(sim.bombs.map((b) => String(b.id)));
@@ -88,13 +94,15 @@ export function copySimToSchema(sim: GameState, out: RoomState): void {
     if (!bs) {
       bs = new BombSchema();
       bs.id = bomb.id;
-      bs.col = bomb.col;
-      bs.row = bomb.row;
       bs.ownerId = bomb.ownerId;
       bs.blastRadius = bomb.blastRadius;
       out.bombs.set(key, bs);
     }
+    // Sliding bombs move, so col/row are refreshed every tick alongside the fuse.
+    bs.col = bomb.col;
+    bs.row = bomb.row;
     bs.fuseTicks = bomb.fuseTicks;
+    bs.slideInterval = bomb.slideInterval;
   }
 
   out.explosions.clear();

@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { createRoom, joinRoom } from '../net';
 import type { GameRoomConnection } from '../net';
-import { SPRITE_SIZE, TEX, addImage, addMenuBackdrop } from '../textures';
+import { SPRITE_SIZE, TEX, TEXT_RES, addImage, addMenuBackdrop } from '../textures';
 import type { GameSceneData } from './GameScene';
 import type { LobbySceneData } from './LobbyScene';
 
@@ -71,6 +71,7 @@ export class MenuScene extends Phaser.Scene {
         fontFamily: 'monospace',
         fontSize: '18px',
         color: '#ff6060',
+        resolution: TEXT_RES,
       })
       .setOrigin(0.5);
 
@@ -79,6 +80,7 @@ export class MenuScene extends Phaser.Scene {
         fontFamily: 'monospace',
         fontSize: '18px',
         color: '#999999',
+        resolution: TEXT_RES,
       })
       .setOrigin(0.5);
 
@@ -106,6 +108,7 @@ export class MenuScene extends Phaser.Scene {
         fontFamily: 'monospace',
         fontSize: '28px',
         color: '#ffe040',
+        resolution: TEXT_RES,
       })
       .setOrigin(0.5);
     bg.on('pointerover', () => {

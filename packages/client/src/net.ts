@@ -30,6 +30,10 @@ export interface NetPlayer {
   speed: number;
   activeBombs: number;
   isBot: boolean;
+  character: number;
+  kickTicks: number;
+  wins: number;
+  placement: number;
 }
 
 export interface NetBomb {
@@ -39,6 +43,7 @@ export interface NetBomb {
   ownerId: string;
   fuseTicks: number;
   blastRadius: number;
+  slideInterval: number;
 }
 
 export interface NetExplosion {

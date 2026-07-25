@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AddressInfo } from 'node:net';
+import { matchMaker } from 'colyseus';
 import { Client } from 'colyseus.js';
 import type { Room } from 'colyseus.js';
 import { GRID_WIDTH, TileType, generateMap } from '@bomberman/shared';
@@ -194,6 +195,96 @@ describe('create/join/start/move flow', () => {
       expect(guest.state.players.size).toBe(1);
     } finally {
       await guest.leave();
+    }
+  });
+
+  it('records placements + wins on finish, then host backToLobby resets to lobby and drops bots', async () => {
+    const host: AnyRoom = await new Client(wsUrl).create('game', { nickname: 'Champ' });
+    try {
+      await until(() => host.state?.code?.length === 4, 3000, 'state ready');
+      host.send('start'); // fillBots on: p0 human + 3 bots
+      await until(() => host.state.phase === 'playing', 3000, 'phase playing');
+      expect(host.state.players.size).toBe(4);
+
+      // Reach into the live room and end the match deterministically: kill every
+      // bot (distinct deathTicks) while the host survives, so the next sim tick
+      // fires gameEnded with the host as winner.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const room = matchMaker.getLocalRoomById(host.roomId) as any;
+      let t = 30;
+      for (const p of room.sim.state.players) {
+        if (p.id !== 'p0') {
+          p.alive = false;
+          p.deathTick = t;
+          t -= 10;
+        }
+      }
+
+      await until(() => host.state.phase === 'finished', 3000, 'phase finished');
+      expect(host.state.winnerId).toBe('p0');
+      const winner = host.state.players.get('p0');
+      expect(winner.wins).toBe(1);
+      expect(winner.placement).toBe(1);
+      const placements = [...host.state.players.values()]
+        .map((p: { placement: number }) => p.placement)
+        .sort();
+      expect(placements).toEqual([1, 2, 3, 4]);
+      const champChar = winner.character;
+
+      // Host returns everyone to the lobby.
+      host.send('backToLobby');
+      await until(() => host.state.phase === 'lobby', 3000, 'back in lobby');
+      expect(host.state.players.size).toBe(1); // bots dropped
+      expect(host.state.bombs.size).toBe(0);
+      expect(host.state.explosions.length).toBe(0);
+      expect(host.state.powerups.length).toBe(0);
+      expect(host.state.destroyedBlocks.length).toBe(0);
+      expect(host.state.arenaShrunk.length).toBe(0);
+      expect(host.state.winnerId).toBe('');
+      expect(host.state.tick).toBe(0);
+
+      // Survivor keeps identity + score; placement lingers as last result.
+      const stillHere = host.state.players.get('p0');
+      expect(stillHere.character).toBe(champChar);
+      expect(stillHere.wins).toBe(1);
+      expect(stillHere.alive).toBe(true);
+
+      // Room was unlocked: a fresh client can join again.
+      const late: AnyRoom = await new Client(wsUrl).joinById(host.roomId, { nickname: 'Late' });
+      await late.leave();
+    } finally {
+      await host.leave();
+    }
+  });
+
+  it('ignores backToLobby from a non-host', async () => {
+    const host: AnyRoom = await new Client(wsUrl).create('game', { nickname: 'A' });
+    await until(() => host.state?.code?.length === 4, 3000, 'state ready');
+    const guest: AnyRoom = await new Client(wsUrl).joinById(host.roomId, { nickname: 'B' });
+    try {
+      await until(() => host.state.players.size === 2, 3000, 'both in');
+      host.send('toggleBots');
+      await until(() => host.state.fillBots === false, 3000, 'bots off');
+      host.send('start');
+      await until(() => host.state.phase === 'playing', 3000, 'playing');
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const room = matchMaker.getLocalRoomById(host.roomId) as any;
+      for (const p of room.sim.state.players) {
+        if (p.id !== 'p0') {
+          p.alive = false;
+          p.deathTick = 10;
+        }
+      }
+      await until(() => host.state.phase === 'finished', 3000, 'finished');
+
+      // Non-host request must be ignored: phase stays finished.
+      guest.send('backToLobby');
+      await new Promise((r) => setTimeout(r, 200));
+      expect(host.state.phase).toBe('finished');
+    } finally {
+      await guest.leave();
+      await host.leave();
     }
   });
 

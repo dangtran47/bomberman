@@ -44,4 +44,12 @@ describe('InputBuffer', () => {
     buf.remove('p0');
     expect(buf.consume().has('p0')).toBe(false);
   });
+
+  it('clear empties the whole buffer', () => {
+    const buf = new InputBuffer();
+    buf.set('p0', { direction: 'up', placeBomb: true });
+    buf.set('p1', { direction: 'down', placeBomb: false });
+    buf.clear();
+    expect(buf.consume().size).toBe(0);
+  });
 });

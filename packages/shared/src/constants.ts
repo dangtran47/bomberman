@@ -18,6 +18,18 @@ export const MAX_BLAST_RADIUS = 8;
 
 export const SOFT_BLOCK_DENSITY = 0.75; // fraction of eligible floor tiles that become soft blocks
 export const POWERUP_DROP_CHANCE = 0.3;
+export const POWERUP_TYPE_COUNT = 4;
+
+export const CHARACTER_COUNT = 6;
+
+export const KICK_DURATION_TICKS = 300; // 15s at 20tps
+export const KICK_WARNING_TICKS = 60; // last 3s
+export const KICK_SLIDE_SPEED_MULT = 3; // a kicked bomb travels at ~3x the kicker's tiles/sec
+
+/** Ticks between tile-steps for a bomb kicked by a player moving `speed` tiles/sec. */
+export function kickSlideInterval(speed: number): number {
+  return Math.max(1, Math.round(TICK_RATE / (speed * KICK_SLIDE_SPEED_MULT)));
+}
 
 export const SUDDEN_DEATH_START_TICKS = 2400; // 2min at 20tps
 export const SUDDEN_DEATH_INTERVAL_TICKS = 10; // one tile per 0.5s

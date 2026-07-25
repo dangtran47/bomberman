@@ -231,3 +231,72 @@ player_green
   orig: 441, 502
   offset: 0, 0
   index: -1
+
+gameplay6.png
+size: 512, 256
+format: RGBA8888
+filter: Nearest, Nearest
+repeat: none
+winter_lodge
+  rotate: false
+  xy: 2, 2
+  size: 186, 204
+  orig: 186, 204
+  offset: 0, 0
+  index: -1
+winter_wall
+  rotate: false
+  xy: 192, 2
+  size: 62, 80
+  orig: 62, 80
+  offset: 0, 0
+  index: -1
+winter_block_cans
+  rotate: false
+  xy: 256, 2
+  size: 62, 80
+  orig: 62, 80
+  offset: 0, 0
+  index: -1
+winter_block_sled
+  rotate: false
+  xy: 320, 2
+  size: 62, 80
+  orig: 62, 80
+  offset: 0, 0
+  index: -1
+winter_block_window
+  rotate: false
+  xy: 384, 2
+  size: 62, 80
+  orig: 62, 80
+  offset: 0, 0
+  index: -1
+winter_block_ice
+  rotate: false
+  xy: 448, 2
+  size: 62, 80
+  orig: 62, 80
+  offset: 0, 0
+  index: -1
+winter_block_snowball
+  rotate: false
+  xy: 192, 86
+  size: 62, 62
+  orig: 62, 62
+  offset: 0, 0
+  index: -1
+winter_floor
+  rotate: false
+  xy: 256, 86
+  size: 62, 62
+  orig: 62, 62
+  offset: 0, 0
+  index: -1
+winter_floor2
+  rotate: false
+  xy: 320, 86
+  size: 62, 62
+  orig: 62, 62
+  offset: 0, 0
+  index: -1

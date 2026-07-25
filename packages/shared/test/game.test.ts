@@ -17,12 +17,13 @@ import { createRng } from '../src/rng';
 import { PowerupType, TileType } from '../src/types';
 import type { Direction, PlayerInput } from '../src/types';
 
-// Seeds mined against createRng so the game's FIRST powerup roll is known:
-// seed 7 -> drop ExtraBomb, seed 8 -> drop BiggerBlast, seed 9 -> drop Speed,
+// Seeds mined against createRng so the game's FIRST powerup roll is known.
+// Type roll is Math.floor(rng() * POWERUP_TYPE_COUNT) with POWERUP_TYPE_COUNT=4:
+// seed 7 -> drop ExtraBomb, seed 15 -> drop BiggerBlast, seed 8 -> drop Speed,
 // seed 1 -> no drop (first roll 0.627 >= POWERUP_DROP_CHANCE).
 const SEED_EXTRA_BOMB = 7;
-const SEED_BIGGER_BLAST = 8;
-const SEED_SPEED = 9;
+const SEED_BIGGER_BLAST = 15;
+const SEED_SPEED = 8;
 const SEED_NO_DROP = 1;
 
 const STEP = BASE_SPEED / 20; // 0.15 tiles per tick at base speed

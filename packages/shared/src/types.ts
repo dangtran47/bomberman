@@ -8,6 +8,7 @@ export enum PowerupType {
   ExtraBomb,
   BiggerBlast,
   Speed,
+  Kick,
 }
 
 export type Direction = 'up' | 'down' | 'left' | 'right';
@@ -27,6 +28,8 @@ export interface Player {
   bombCount: number;
   blastRadius: number;
   activeBombs: number;
+  kickTicks: number; // 0 = no kick
+  deathTick: number | null; // null while alive/survivor
 }
 
 export interface Bomb {
@@ -36,6 +39,10 @@ export interface Bomb {
   ownerId: string;
   fuseTicks: number;
   blastRadius: number;
+  slideDC: number; // slideDC===0 && slideDR===0 => stationary
+  slideDR: number;
+  slideCooldown: number;
+  slideInterval: number; // ticks per tile-step for this bomb; 0 until kicked
 }
 
 export interface ExplosionCell {

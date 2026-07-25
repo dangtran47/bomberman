@@ -6,14 +6,17 @@ import {
   EXPLOSION_DURATION_TICKS,
   GRID_HEIGHT,
   GRID_WIDTH,
+  KICK_DURATION_TICKS,
   MAX_BLAST_RADIUS,
   MAX_BOMB_COUNT,
   MAX_SPEED,
   POWERUP_DROP_CHANCE,
+  POWERUP_TYPE_COUNT,
   SPEED_INCREMENT,
   SUDDEN_DEATH_INTERVAL_TICKS,
   SUDDEN_DEATH_START_TICKS,
   TICK_RATE,
+  kickSlideInterval,
 } from './constants';
 import { SPAWN_POINTS, generateMap } from './map';
 import { SHRINK_ORDER } from './suddenDeath';
@@ -108,6 +111,9 @@ function applyPowerup(player: Player, type: PowerupType): void {
     case PowerupType.Speed:
       player.speed = Math.min(MAX_SPEED, player.speed + SPEED_INCREMENT);
       break;
+    case PowerupType.Kick:
+      player.kickTicks = KICK_DURATION_TICKS; // re-pickup resets to full
+      break;
   }
 }
 
@@ -133,6 +139,8 @@ class GameImpl implements Game {
         bombCount: BASE_BOMB_COUNT,
         blastRadius: BASE_BLAST_RADIUS,
         activeBombs: 0,
+        kickTicks: 0,
+        deathTick: null,
       })),
       bombs: [],
       explosions: [],
@@ -150,12 +158,14 @@ class GameImpl implements Game {
 
     for (const player of s.players) {
       if (!player.alive) continue;
+      if (player.kickTicks > 0) player.kickTicks--;
       const input = readInput(inputs, player.id);
       if (input.placeBomb) this.placeBomb(player, events);
       if (input.direction) this.movePlayer(player, input.direction);
     }
 
     this.ageExplosions();
+    this.moveSlidingBombs();
     this.detonateDueBombs(events);
     this.applySuddenDeath(events);
     this.applyDeaths(events);
@@ -176,6 +186,10 @@ class GameImpl implements Game {
       ownerId: player.id,
       fuseTicks: BOMB_FUSE_TICKS,
       blastRadius: player.blastRadius,
+      slideDC: 0,
+      slideDR: 0,
+      slideCooldown: 0,
+      slideInterval: 0,
     };
     this.state.bombs.push(bomb);
     player.activeBombs++;
@@ -220,6 +234,28 @@ class GameImpl implements Game {
     if (this.canEnter(nextCol, nextRow)) {
       next = target;
     } else {
+      // Kick: with the skill active, a bomb blocking the tile ahead slides off
+      // in the movement direction; the player still clamps this tick.
+      if (
+        player.kickTicks > 0 &&
+        nextCol >= 0 &&
+        nextCol < GRID_WIDTH &&
+        nextRow >= 0 &&
+        nextRow < GRID_HEIGHT &&
+        this.state.grid[nextRow][nextCol] === TileType.Floor
+      ) {
+        const bomb = this.bombAt(nextCol, nextRow);
+        if (bomb) {
+          // Direction may be overwritten mid-slide (e.g. an enemy kick), but the
+          // cooldown is only armed from rest — otherwise a held push would reset
+          // it every tick and the bomb would never advance.
+          const wasStationary = bomb.slideDC === 0 && bomb.slideDR === 0;
+          bomb.slideDC = horizontal ? sign : 0;
+          bomb.slideDR = horizontal ? 0 : sign;
+          bomb.slideInterval = kickSlideInterval(player.speed);
+          if (wasStationary) bomb.slideCooldown = bomb.slideInterval;
+        }
+      }
       // Blocked ahead: may still advance up to the center of the current tile.
       next = sign > 0 ? Math.min(target, Math.max(cur, pos)) : Math.max(target, Math.min(cur, pos));
     }
@@ -238,10 +274,40 @@ class GameImpl implements Game {
     return !this.state.bombs.some((b) => b.col === col && b.row === row);
   }
 
+  private bombAt(col: number, row: number): Bomb | undefined {
+    return this.state.bombs.find((b) => b.col === col && b.row === row);
+  }
+
   private ageExplosions(): void {
     const s = this.state;
     for (const cell of s.explosions) cell.ticksLeft--;
     s.explosions = s.explosions.filter((cell) => cell.ticksLeft > 0);
+  }
+
+  private moveSlidingBombs(): void {
+    const s = this.state;
+    for (const bomb of s.bombs) {
+      if (bomb.slideDC === 0 && bomb.slideDR === 0) continue;
+      bomb.slideCooldown--;
+      if (bomb.slideCooldown > 0) continue;
+      const nextCol = bomb.col + bomb.slideDC;
+      const nextRow = bomb.row + bomb.slideDR;
+      const blocked =
+        nextCol < 0 || nextCol >= GRID_WIDTH || nextRow < 0 || nextRow >= GRID_HEIGHT ||
+        s.grid[nextRow][nextCol] !== TileType.Floor ||
+        s.bombs.some((b) => b !== bomb && b.col === nextCol && b.row === nextRow);
+      if (blocked) {
+        // Explode on impact this same tick: detonateDueBombs (runs next) will see
+        // fuseTicks<=0 and detonate at the bomb's current tile, cross rays and all.
+        bomb.slideDC = 0;
+        bomb.slideDR = 0;
+        bomb.fuseTicks = 1;
+      } else {
+        bomb.col = nextCol;
+        bomb.row = nextRow;
+        bomb.slideCooldown = bomb.slideInterval || 1;
+      }
+    }
   }
 
   private detonateDueBombs(events: GameEvent[]): void {
@@ -274,7 +340,7 @@ class GameImpl implements Game {
             destroyed.push({ col, row });
             s.grid[row][col] = TileType.Floor;
             if (this.rng() < POWERUP_DROP_CHANCE) {
-              const type = Math.floor(this.rng() * 3) as PowerupType;
+              const type = Math.floor(this.rng() * POWERUP_TYPE_COUNT) as PowerupType;
               spawned.push({ col, row, type });
             }
             break;
@@ -360,6 +426,8 @@ class GameImpl implements Game {
       if (!player.alive) continue;
       if (Math.round(player.x) === col && Math.round(player.y) === row) {
         player.alive = false;
+        player.deathTick = s.tick;
+        player.kickTicks = 0;
         events.push({ type: 'playerDied', playerId: player.id, col, row });
       }
     }
@@ -375,6 +443,8 @@ class GameImpl implements Game {
       const row = Math.round(player.y);
       if (burning.has(tileKey(col, row))) {
         player.alive = false;
+        player.deathTick = s.tick;
+        player.kickTicks = 0;
         events.push({ type: 'playerDied', playerId: player.id, col, row });
       }
     }

@@ -36,4 +36,8 @@ export class InputBuffer {
   remove(playerId: string): void {
     this.inputs.delete(playerId);
   }
+
+  clear(): void {
+    this.inputs.clear();
+  }
 }
