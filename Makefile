@@ -32,8 +32,11 @@ build:
 test:
 	npm test
 
+# Deploy both frontend and backend
+deploy: deploy-fe deploy-be
+
 # Build client with prod server URL + deploy to Cloudflare Pages
-deploy deploy-fe:
+deploy-fe:
 	VITE_SERVER_URL=$(VITE_SERVER_URL) npm run build -w @bomberman/client
 	npx wrangler pages deploy packages/client/dist --project-name bomberman
 

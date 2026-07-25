@@ -232,6 +232,76 @@ function canEscapeOwnBomb(ctx: BotContext, radius: number, col: number, row: num
 }
 
 /**
+ * Where a gun or hammer held at (col,row) should aim to hit something worth
+ * hitting — an enemy first, else a soft block — or null if this tile has no
+ * target. The rules mirror game.ts: the hammer only reaches the tile ahead,
+ * the gun's ray runs until a hard block, a soft block, a bomb or a player.
+ * Bomb tiles are never a target: setting a fuse off next to the bot is suicide.
+ */
+function skillAim(
+  ctx: BotContext,
+  weapon: 'gun' | 'hammer',
+  col: number,
+  row: number,
+  enemyTiles: Set<number>,
+): Direction | null {
+  let softAim: Direction | null = null;
+  for (const { dc, dr, dir } of NEIGHBOR_STEPS) {
+    const reach = weapon === 'hammer' ? 1 : Number.POSITIVE_INFINITY;
+    for (let step = 1; step <= reach; step++) {
+      const c = col + dc * step;
+      const r = row + dr * step;
+      if (!inBounds(c, r)) break;
+      const tile = ctx.state.grid[r][c];
+      if (tile === TileType.HardBlock) break;
+      if (tile === TileType.SoftBlock) {
+        if (softAim === null) softAim = dir;
+        break;
+      }
+      if (ctx.bombTiles.has(key(c, r))) break;
+      if (enemyTiles.has(key(c, r))) return dir; // kill beats digging
+    }
+  }
+  return softAim;
+}
+
+/**
+ * Skill rule, used instead of the bomb rule while a gun or hammer is held:
+ * space triggers the skill and places no bomb, so digging and attacking both
+ * go through the weapon. Aims and fires from the current tile when there is a
+ * target, else walks to the nearest safe tile that has one. The direction is
+ * sent alongside the fire flag because game.ts aims off `facing`, which the
+ * same tick's direction sets. Returns null when no target is reachable so the
+ * caller falls through to the idle rule.
+ */
+function useSkill(
+  ctx: BotContext,
+  weapon: 'gun' | 'hammer',
+  col: number,
+  row: number,
+  cooldown: number,
+  enemyTiles: Set<number>,
+  blockUnsafe: (col: number, row: number) => boolean,
+): PlayerInput | null {
+  const aim = skillAim(ctx, weapon, col, row, enemyTiles);
+  if (aim !== null) {
+    // Cooling down: hold position on a tile that already has a target rather
+    // than wander off; the cooldown ticks down and the swing lands next.
+    if (cooldown > 0) return { direction: null, placeBomb: false };
+    return weapon === 'gun'
+      ? { direction: aim, placeBomb: false, fireGun: true }
+      : { direction: aim, placeBomb: false, swingHammer: true };
+  }
+  const nodes = flood(ctx, col, row, blockUnsafe);
+  for (let i = 1; i < nodes.length; i++) {
+    if (skillAim(ctx, weapon, nodes[i].col, nodes[i].row, enemyTiles) !== null) {
+      return { direction: firstStep(nodes, i), placeBomb: false };
+    }
+  }
+  return null;
+}
+
+/**
  * Creates a bot controller for the given player. The caller owns the rng
  * (pass a seeded instance, e.g. createRng(seed)); the bot never calls
  * Math.random, so identical states and rng seeds yield identical inputs.
@@ -260,24 +330,44 @@ export function createBot(playerId: string, rng: () => number): Bot {
         if (goal > 0) return { direction: firstStep(nodes, goal), placeBomb: false };
       }
 
-      // 3. Attack/dig: nearest safe-reachable tile whose bomb would hit a
-      // soft block or an enemy; place only if an escape route survives it.
       const enemyTiles = new Set<number>();
       for (const p of state.players) {
         if (p.id !== playerId && p.alive) enemyTiles.add(key(Math.round(p.x), Math.round(p.y)));
       }
-      const nodes = flood(ctx, col, row, blockUnsafe);
-      const goal = nodes.findIndex((n) =>
-        bombWouldHit(ctx, me.blastRadius, n.col, n.row, enemyTiles),
-      );
-      if (goal === 0) {
-        if (me.activeBombs < me.bombCount && canEscapeOwnBomb(ctx, me.blastRadius, col, row)) {
-          return { direction: null, placeBomb: true };
+
+      // 3. Attack/dig. A held gun or hammer takes over the trigger, so no bomb
+      // can be placed until it is spent — use the weapon instead of standing
+      // on a bomb spot forever. Kick leaves bombs working, so it is ignored.
+      const weapon = me.hammerUses > 0 ? 'hammer' : me.gunAmmo > 0 ? 'gun' : null;
+      if (weapon) {
+        const action = useSkill(
+          ctx,
+          weapon,
+          col,
+          row,
+          me.actionCooldown,
+          enemyTiles,
+          blockUnsafe,
+        );
+        if (action) return action;
+        // No target reachable: fall through to idle (never placeBomb, which
+        // would burn a swing at whatever the bot happens to be facing).
+      } else {
+        // Nearest safe-reachable tile whose bomb would hit a soft block or an
+        // enemy; place only if an escape route survives it.
+        const nodes = flood(ctx, col, row, blockUnsafe);
+        const goal = nodes.findIndex((n) =>
+          bombWouldHit(ctx, me.blastRadius, n.col, n.row, enemyTiles),
+        );
+        if (goal === 0) {
+          if (me.activeBombs < me.bombCount && canEscapeOwnBomb(ctx, me.blastRadius, col, row)) {
+            return { direction: null, placeBomb: true };
+          }
+          // Standing on the spot but placing is unsafe or capacity is used up:
+          // fall through to idle rather than freeze forever.
+        } else if (goal > 0) {
+          return { direction: firstStep(nodes, goal), placeBomb: false };
         }
-        // Standing on the spot but placing is unsafe or capacity is used up:
-        // fall through to idle rather than freeze forever.
-      } else if (goal > 0) {
-        return { direction: firstStep(nodes, goal), placeBomb: false };
       }
 
       // 4. Idle: random adjacent safe tile via the injected rng, else stand still.

@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { createBot } from '../src/bot';
 import type { Bot } from '../src/bot';
-import { BOMB_FUSE_TICKS, GRID_HEIGHT, GRID_WIDTH } from '../src/constants';
+import {
+  BOMB_FUSE_TICKS,
+  GRID_HEIGHT,
+  GRID_WIDTH,
+  GUN_AMMO_PER_PICKUP,
+  HAMMER_USES_PER_PICKUP,
+} from '../src/constants';
 import { createGame } from '../src/game';
 import type { Game, GameEvent } from '../src/game';
 import { createRng } from '../src/rng';
@@ -104,6 +110,85 @@ describe('createBot', () => {
       expect.objectContaining({ playerId: 'bot', col: 3, row: 0 }),
     ]);
     expect(player(game, 'bot').bombCount).toBe(2);
+  });
+
+  it('swings a held hammer to break a nearby soft block instead of freezing', () => {
+    const grid = openGrid();
+    grid[0][2] = TileType.SoftBlock; // (2,0)
+    const game = createGame({ seed: 1, playerIds: ['bot', 'p2'], grid });
+    player(game, 'bot').hammerUses = HAMMER_USES_PER_PICKUP;
+    const bot = createBot('bot', createRng(4));
+
+    const events = runBots(game, { bot }, 120);
+    expect(ofType(events, 'hammerSwung').length).toBeGreaterThanOrEqual(1);
+    expect(ofType(events, 'blockDestroyed')).toEqual([
+      expect.objectContaining({ col: 2, row: 0 }),
+    ]);
+    expect(ofType(events, 'bombPlaced')).toHaveLength(0); // armed: space never drops bombs
+    expect(player(game, 'bot').alive).toBe(true);
+  });
+
+  it('does not stall holding the trigger when a soft block is already adjacent', () => {
+    const grid = openGrid();
+    grid[0][1] = TileType.SoftBlock; // (1,0) right next to the bot spawn
+    const game = createGame({ seed: 1, playerIds: ['bot', 'p2'], grid });
+    player(game, 'bot').hammerUses = HAMMER_USES_PER_PICKUP;
+    const bot = createBot('bot', createRng(3));
+
+    const events = runBots(game, { bot }, 120);
+    expect(ofType(events, 'blockDestroyed')).toEqual([
+      expect.objectContaining({ col: 1, row: 0 }),
+    ]);
+    expect(player(game, 'bot').hammerUses).toBeLessThan(HAMMER_USES_PER_PICKUP);
+  });
+
+  it('hammers an adjacent enemy to death', () => {
+    const game = createGame({ seed: 1, playerIds: ['bot', 'p2'], grid: openGrid() });
+    player(game, 'bot').hammerUses = HAMMER_USES_PER_PICKUP;
+    const victim = player(game, 'p2');
+    victim.x = 2;
+    victim.y = 0; // two tiles right of the bot spawn, reachable and hammerable
+    const bot = createBot('bot', createRng(5));
+
+    const events = runBots(game, { bot }, 120);
+    expect(ofType(events, 'hammerSwung').length).toBeGreaterThanOrEqual(1);
+    expect(victim.alive).toBe(false);
+  });
+
+  it('fires a held gun at a soft block in its line instead of freezing', () => {
+    const grid = openGrid();
+    grid[0][3] = TileType.SoftBlock; // (3,0), straight down the bot's row
+    const game = createGame({ seed: 1, playerIds: ['bot', 'p2'], grid });
+    player(game, 'bot').gunAmmo = GUN_AMMO_PER_PICKUP;
+    player(game, 'p2').y = 6; // out of the firing line
+    const bot = createBot('bot', createRng(4));
+
+    const events = runBots(game, { bot }, 120);
+    expect(ofType(events, 'gunFired').length).toBeGreaterThanOrEqual(1);
+    expect(ofType(events, 'blockDestroyed')).toEqual([
+      expect.objectContaining({ col: 3, row: 0 }),
+    ]);
+    expect(ofType(events, 'bombPlaced')).toHaveLength(0);
+    expect(player(game, 'bot').alive).toBe(true);
+  });
+
+  it('spends the hammer on several blocks, then goes back to bombs', () => {
+    const grid = openGrid();
+    grid[0][2] = TileType.SoftBlock;
+    grid[2][0] = TileType.SoftBlock;
+    grid[2][2] = TileType.SoftBlock;
+    grid[4][0] = TileType.SoftBlock;
+    const game = createGame({ seed: 1, playerIds: ['bot', 'p2'], grid });
+    player(game, 'bot').hammerUses = HAMMER_USES_PER_PICKUP;
+    const bot = createBot('bot', createRng(9));
+
+    const events = runBots(game, { bot }, 600);
+    // Not necessarily the full magazine: a block can drop another skill pickup,
+    // and skills are exclusive, so collecting one replaces the hammer.
+    expect(ofType(events, 'hammerSwung').length).toBeGreaterThanOrEqual(2);
+    expect(player(game, 'bot').hammerUses).toBe(0);
+    expect(ofType(events, 'bombPlaced').length).toBeGreaterThanOrEqual(1);
+    expect(player(game, 'bot').alive).toBe(true);
   });
 
   it('returns idle input for a dead or absent player', () => {
