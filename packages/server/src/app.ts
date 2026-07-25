@@ -42,6 +42,10 @@ export interface AppOptions {
 
 export function createApp(options: AppOptions = {}): { gameServer: Server; httpServer: http.Server } {
   const httpServer = http.createServer(handleHttpRequest);
+  // Disable Nagle's algorithm on every TCP socket (WS upgrades reuse these).
+  // Node defaults noDelay=false, which lets Nagle hold small game packets up to
+  // ~40ms waiting for an ACK — real added latency at our 20Hz packet cadence.
+  httpServer.on('connection', (socket) => socket.setNoDelay(true));
   const gameServer = new Server({
     transport: new WebSocketTransport({ server: httpServer }),
     gracefullyShutdown: options.gracefullyShutdown ?? true,

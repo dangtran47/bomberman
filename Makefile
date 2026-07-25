@@ -3,6 +3,10 @@
 # Prod server URL baked into client bundle at build time
 VITE_SERVER_URL ?= wss://bomberman-server-prd.fly.dev
 
+# Simulated round-trip latency (ms) for local dev; 0 = off.
+# Usage: make start LAG=50
+LAG ?= 0
+
 # Install all workspace deps
 install:
 	npm install
@@ -11,13 +15,13 @@ install:
 start:
 	@echo "Starting bomberman (server + client)..."
 	@trap 'kill 0' INT TERM EXIT; \
-	npm run dev --workspace=@bomberman/server & \
+	SIMULATE_LATENCY_MS=$(LAG) npm run dev --workspace=@bomberman/server & \
 	npm run dev --workspace=@bomberman/client & \
 	wait
 
 # Server only (tsx watch)
 server:
-	npm run dev --workspace=@bomberman/server
+	SIMULATE_LATENCY_MS=$(LAG) npm run dev --workspace=@bomberman/server
 
 # Client only (vite)
 client:
