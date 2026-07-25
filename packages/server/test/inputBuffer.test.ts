@@ -67,6 +67,27 @@ describe('InputBuffer', () => {
     expect(buf.consume().get('p0')).toEqual(snap());
   });
 
+  it('carries a valid pingMs into the consumed snapshot', () => {
+    const buf = new InputBuffer();
+    buf.set('p0', { direction: 'up', placeBomb: false, pingMs: 120 });
+    expect(buf.consume().get('p0')?.pingMs).toBe(120);
+  });
+
+  it('ignores a non-numeric pingMs and keeps direction usable', () => {
+    const buf = new InputBuffer();
+    buf.set('p0', { direction: 'left', placeBomb: false, pingMs: 'oops' } as never);
+    const s = buf.consume().get('p0');
+    expect(s?.direction).toBe('left');
+    expect(s?.pingMs).toBeUndefined();
+  });
+
+  it('keeps the last valid pingMs when a later message omits it', () => {
+    const buf = new InputBuffer();
+    buf.set('p0', { direction: 'up', placeBomb: false, pingMs: 80 });
+    buf.set('p0', { direction: 'up', placeBomb: false });
+    expect(buf.consume().get('p0')?.pingMs).toBe(80);
+  });
+
   it('remove drops the player entirely', () => {
     const buf = new InputBuffer();
     buf.set('p0', { direction: 'up', placeBomb: true });
