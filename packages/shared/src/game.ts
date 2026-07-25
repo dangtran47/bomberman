@@ -203,6 +203,7 @@ class GameImpl implements Game {
         momentumDir: null,
         momentumTicks: 0,
         turnTicks: 0,
+        laneDir: null,
         deathTick: null,
       })),
       bombs: [],
@@ -468,16 +469,18 @@ class GameImpl implements Game {
   /**
    * Axis-locked movement with corner slide: to move along an axis the player
    * must be aligned to the perpendicular lane; if not, the tick's movement
-   * budget is spent sliding toward the nearest lane first, and any remainder
-   * goes into the requested direction. `budgetMult` scales the tick's budget
-   * (ice glide); returns true when the tile ahead stopped the player short.
+   * budget is spent sliding into the lane the player was already heading for
+   * (see `laneAhead`), and any remainder goes into the requested direction.
+   * `budgetMult` scales the tick's budget (ice glide); returns true when the
+   * player was stopped short, either by the tile ahead or by an unreachable lane.
    */
   private movePlayer(player: Player, direction: Direction, budgetMult = 1): boolean {
     let budget = (player.speed / TICK_RATE) * budgetMult;
     const horizontal = direction === 'left' || direction === 'right';
 
     const perp = horizontal ? player.y : player.x;
-    const lane = Math.round(perp);
+    const lane = this.laneAhead(player, perp, horizontal);
+    if (lane === null) return true;
     const dist = Math.abs(lane - perp);
     if (dist > EPS) {
       if (dist <= budget + EPS) {
@@ -493,6 +496,9 @@ class GameImpl implements Game {
       }
     }
     if (budget <= EPS) return false;
+    // Aligned from here on, so this direction owns the lane commitment: whatever
+    // offset it leaves behind must be resolved in its own direction next tick.
+    player.laneDir = direction;
 
     const sign = direction === 'down' || direction === 'right' ? 1 : -1;
     const pos = horizontal ? player.x : player.y;
@@ -534,6 +540,31 @@ class GameImpl implements Game {
     if (horizontal) player.x = next;
     else player.y = next;
     return blocked;
+  }
+
+  /**
+   * The lane an off-lane player is allowed to settle into. Being off-lane only
+   * ever comes from a move along the perpendicular axis, so the lane that move
+   * was heading for is the one we keep: pulling the player back into the lane
+   * they just left reverses their own input and throws their aim off. Returns
+   * null when that lane has since been closed (a bomb dropped into it), which
+   * makes the caller refuse the move rather than fall back to the lane behind.
+   */
+  private laneAhead(player: Player, perp: number, horizontal: boolean): number | null {
+    const nearest = Math.round(perp);
+    if (Math.abs(nearest - perp) <= EPS) return nearest;
+
+    const commit = player.laneDir;
+    const perpendicular =
+      commit !== null &&
+      (horizontal ? commit === 'up' || commit === 'down' : commit === 'left' || commit === 'right');
+    if (!perpendicular) return nearest; // no commitment to honour; keep the classic slide
+    const lane = commit === 'down' || commit === 'right' ? Math.ceil(perp) : Math.floor(perp);
+    if (lane === nearest) return lane; // already past the halfway point, so already inside that tile
+
+    const col = horizontal ? Math.round(player.x) : lane;
+    const row = horizontal ? lane : Math.round(player.y);
+    return this.canEnter(col, row) ? lane : null;
   }
 
   /**

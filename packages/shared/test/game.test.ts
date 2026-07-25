@@ -138,14 +138,28 @@ describe('movement', () => {
     expect(player(game, 'p1').x).toBe(0);
   });
 
-  it('corner-slides toward the nearest lane before moving in the new direction', () => {
+  it('corner-slides onward into the lane it was already heading for, never back', () => {
     const game = twoPlayerGame();
     run(game, 2, { p1: move('down') }); // y ~= 0.3, not row-aligned
     run(game, 1, { p1: move('right') });
-    expect(player(game, 'p1').y).toBeCloseTo(0.15, 10); // slid back toward row 0
+    expect(player(game, 'p1').y).toBeCloseTo(0.45, 10); // kept going down, not back to row 0
     expect(player(game, 'p1').x).toBeCloseTo(0, 10); // no horizontal progress yet
+    run(game, 3, { p1: move('right') });
+    expect(player(game, 'p1').y).toBeCloseTo(0.9, 10);
     run(game, 1, { p1: move('right') });
-    expect(player(game, 'p1').y).toBe(0); // snapped exactly into the lane
+    expect(player(game, 'p1').y).toBe(1); // snapped exactly into the lane below
+    expect(player(game, 'p1').x).toBeCloseTo(0.05, 10); // leftover budget went right
+  });
+
+  it('refuses the turn instead of backing up when the committed lane is closed', () => {
+    const game = twoPlayerGame();
+    run(game, 2, { p1: move('down') }); // y ~= 0.3, heading for row 1
+    game.state.grid[1][0] = TileType.HardBlock; // row 1 shuts behind the commitment
+    run(game, 3, { p1: move('right') });
+    expect(player(game, 'p1').y).toBeCloseTo(2 * STEP, 10); // held still, never dragged back
+    expect(player(game, 'p1').x).toBe(0);
+    run(game, 2, { p1: move('up') }); // the player resolves it themselves
+    expect(player(game, 'p1').y).toBe(0);
     run(game, 1, { p1: move('right') });
     expect(player(game, 'p1').x).toBeCloseTo(STEP, 10);
   });
@@ -484,14 +498,14 @@ describe('death and win', () => {
   it('keeps a dead player bomb ticking, ignores dead player input, and frees the slot', () => {
     const game = createGame({ seed: SEED_NO_DROP, playerIds: ['p1', 'p2', 'p3'], grid: openGrid() });
     // p3 walks up column 0 while p1 walks down, then p3 bombs p1's tile.
-    run(game, 21, { p1: move('down'), p3: move('up') }); // p1 (0,3), p3 (0,9)
+    run(game, 20, { p1: move('down'), p3: move('up') }); // p1 (0,3) lane-exact, p3 (0,9)
     run(game, 8, { p1: move('right'), p3: move('up') }); // p1 to (1,3)
-    run(game, 22, { p3: move('up') }); // tick 51: p3 at (0,4)
+    run(game, 23, { p3: move('up') }); // tick 51: p3 at (0,4)
     run(game, 1, { p3: dropBomb() }); // tick 52: p3 bomb at (0,4), explodes tick 111
     run(game, 14, { p3: move('down') }); // p3 retreats to (0,6)
     run(game, 1, { p1: dropBomb() }); // tick 67: p1 bomb at (1,3), explodes tick 126
-    run(game, 7, { p1: move('left') }); // tick 74: p1 back on (0,3), inside p3's blast
-    run(game, 36); // tick 110: nothing yet
+    run(game, 8, { p1: move('left') }); // tick 75: p1 back on (0,3), inside p3's blast
+    run(game, 35); // tick 110: nothing yet
     const deathTick = run(game, 1); // tick 111: p3's bomb kills p1
     expect(ofType(deathTick, 'playerDied')).toEqual([
       expect.objectContaining({ playerId: 'p1' }),

@@ -42,6 +42,7 @@ export interface Player {
   momentumDir: Direction | null; // heading carried across ice, null when at rest
   momentumTicks: number; // remaining glide budget on ice
   turnTicks: number; // ticks spent fighting the current heading on ice
+  laneDir: Direction | null; // direction that pulled the player off-lane; the corner slide follows it
   deathTick: number | null; // null while alive/survivor
 }
 
