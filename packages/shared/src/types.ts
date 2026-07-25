@@ -37,6 +37,7 @@ export interface Player {
   hammerUses: number; // swings left, 0 = no hammer
   actionCooldown: number; // ticks until the next gun/hammer use is allowed
   triggerHeld: boolean; // placeBomb held last tick, so skills fire on the press only
+  skillTriggerHeld: boolean; // this press already served a skill; no bomb until it is released
   facing: Direction; // last requested direction; aims gun and hammer
   momentumDir: Direction | null; // heading carried across ice, null when at rest
   momentumTicks: number; // remaining glide budget on ice

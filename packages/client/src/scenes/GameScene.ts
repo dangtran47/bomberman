@@ -108,7 +108,7 @@ const HAMMER_TARGET = {
   color: 0xff4040,
   width: 4,
   /** Inset of each X arm from the tile edge. */
-  inset: 8,
+  inset: 12,
 } as const;
 /** Gun tracer: color, thickness and fade time of the shot line. */
 const TRACER_COLOR = 0xffe040;
@@ -249,6 +249,11 @@ export class GameScene extends Phaser.Scene {
   private pendingHammer = false;
   /** Online: latched Space press, routed to whichever skill is held. */
   private pendingTrigger = false;
+  /**
+   * Online: this Space press already served a skill, so it must not turn into a
+   * bomb when the magazine empties mid-hold. Cleared when Space comes back up.
+   */
+  private triggerServedSkill = false;
 
   private playerSprites = new Map<string, Phaser.GameObjects.Image>();
   /** Start-of-match arrow over the local player; null once it has faded out. */
@@ -298,6 +303,7 @@ export class GameScene extends Phaser.Scene {
     this.pendingGun = false;
     this.pendingHammer = false;
     this.pendingTrigger = false;
+    this.triggerServedSkill = false;
     this.prevAlive.clear();
     this.prevGunAmmo.clear();
     this.prevHammerUses.clear();
@@ -540,7 +546,9 @@ export class GameScene extends Phaser.Scene {
     if (armed === 'gun' && this.pendingTrigger) this.pendingGun = true;
     if (armed === 'hammer' && this.pendingTrigger) this.pendingHammer = true;
     this.pendingTrigger = false;
-    const bombHeld = armed === null && this.spaceKey.isDown;
+    if (!this.spaceKey.isDown) this.triggerServedSkill = false;
+    else if (armed !== null) this.triggerServedSkill = true;
+    const bombHeld = armed === null && this.spaceKey.isDown && !this.triggerServedSkill;
     this.keepaliveMs += delta;
     if (
       !this.roomClosed &&
@@ -1470,7 +1478,7 @@ export class GameScene extends Phaser.Scene {
 
     if (isHost) {
       const cont = this.add
-        .text(cx, controlsY, 'Continue  [Enter]', {
+        .text(cx, controlsY, 'Continue', {
           fontFamily: 'monospace',
           fontSize: '28px',
           color: '#ffe040',

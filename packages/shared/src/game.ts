@@ -198,6 +198,7 @@ class GameImpl implements Game {
         hammerUses: 0,
         actionCooldown: 0,
         triggerHeld: false,
+        skillTriggerHeld: false,
         facing: 'down',
         momentumDir: null,
         momentumTicks: 0,
@@ -226,10 +227,14 @@ class GameImpl implements Game {
       // Space is one button: while a skill is held it triggers that skill and
       // places no bombs, and it fires on the press (a held trigger would burn
       // the whole magazine at the cooldown's rate).
+      // A press that started as a skill trigger stays one until the key comes
+      // back up: emptying the magazine mid-hold must not turn into a bomb.
       const armed = player.gunAmmo > 0 || player.hammerUses > 0;
       const pressed = input.placeBomb && !player.triggerHeld;
       player.triggerHeld = input.placeBomb;
-      if (input.placeBomb && !armed) this.placeBomb(player, events);
+      if (!input.placeBomb) player.skillTriggerHeld = false;
+      else if (armed) player.skillTriggerHeld = true;
+      if (input.placeBomb && !armed && !player.skillTriggerHeld) this.placeBomb(player, events);
       if (player.actionCooldown > 0) player.actionCooldown--;
       if (input.fireGun || (pressed && player.gunAmmo > 0)) this.fireGun(player, events);
       if (input.swingHammer || (pressed && player.hammerUses > 0)) this.swingHammer(player, events);

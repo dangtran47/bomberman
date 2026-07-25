@@ -452,7 +452,7 @@ describe('space is the skill trigger while armed', () => {
     expect(p1.gunAmmo).toBe(0);
   });
 
-  it('goes back to placing bombs once the skill runs out', () => {
+  it('goes back to placing bombs once the skill runs out and the trigger is pressed again', () => {
     const game = shooterGame();
     const p1 = player(game, 'p1');
     p1.gunAmmo = 1;
@@ -460,8 +460,36 @@ describe('space is the skill trigger while armed', () => {
     run(game, 1, { p1: act({ placeBomb: true }) }); // last shot
     expect(p1.gunAmmo).toBe(0);
 
-    const events = run(game, 1, { p1: act({ placeBomb: true }) });
+    run(game, 1, { p1: act({ placeBomb: false }) }); // release
+    const events = run(game, 1, { p1: act({ placeBomb: true }) }); // fresh press
     expect(ofType(events, 'bombPlaced')).toHaveLength(1);
+  });
+
+  it('does not drop a bomb when the trigger stays held past the last shot', () => {
+    const game = shooterGame();
+    const p1 = player(game, 'p1');
+    p1.gunAmmo = 1;
+
+    // One long hold: the shot empties the gun, the key never comes back up.
+    const events = run(game, 10, { p1: act({ placeBomb: true }) });
+
+    expect(ofType(events, 'gunFired')).toHaveLength(1);
+    expect(ofType(events, 'bombPlaced')).toHaveLength(0);
+    expect(game.state.bombs).toHaveLength(0);
+  });
+
+  it('does not drop a bomb when the trigger stays held past the last swing', () => {
+    const grid = openGrid();
+    grid[0][1] = TileType.SoftBlock;
+    const game = shooterGame(grid, SEED_NO_DROP);
+    const p1 = player(game, 'p1');
+    p1.hammerUses = 1;
+
+    const events = run(game, 10, { p1: act({ placeBomb: true }) });
+
+    expect(ofType(events, 'hammerSwung')).toHaveLength(1);
+    expect(ofType(events, 'bombPlaced')).toHaveLength(0);
+    expect(game.state.bombs).toHaveLength(0);
   });
 
   it('places bombs normally with no skill held', () => {
