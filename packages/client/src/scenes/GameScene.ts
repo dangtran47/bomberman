@@ -663,6 +663,7 @@ export class GameScene extends Phaser.Scene {
         placeBomb: bombHeld,
         fireGun: this.pendingGun,
         swingHammer: this.pendingHammer,
+        pingMs: this.pingMs ?? 0,
       });
       this.pendingGun = false;
       this.pendingHammer = false;
