@@ -15,7 +15,7 @@ export const WINTER_MAP: MapDef = {
     '.#.k.b.c.b.k.#.',
     'o.#ci.o#o.ic#.o',
     'bkciiw.s.wiickb',
-    'c.#i#.kbk.#i#.c',
+    'c.#i#.....#i#.c',
     '#b.i.cHHHc.i.b#',
     's.oiwbHHHbwio.s',
     '#b.i.cHHHc.i.b#',

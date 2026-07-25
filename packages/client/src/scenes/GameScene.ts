@@ -86,6 +86,30 @@ const KICK_WARNING_TINT = 0xff4040;
 /** On-screen height (px) of one overhead skill badge, and the row's pitch. */
 const SKILL_BADGE_HEIGHT = 22;
 const SKILL_BADGE_STEP = 20;
+/**
+ * Start-of-match "this is you" arrow: an overhead triangle that bobs above the
+ * local player's head for the first seconds, then fades out for good.
+ */
+const MY_POINTER = {
+  width: 20,
+  height: 16,
+  color: 0xffe040,
+  /** Gap between the player's head and the arrow's tip. */
+  gap: 34,
+  /** Bob amplitude (px) and one-way duration of the hover tween. */
+  bob: 6,
+  bobMs: 420,
+  /** Fully visible for this long, then fades over fadeMs and is destroyed. */
+  holdMs: 2600,
+  fadeMs: 500,
+} as const;
+/** Hammer aim crosshair: a red X drawn over the tile the swing would strike. */
+const HAMMER_TARGET = {
+  color: 0xff4040,
+  width: 4,
+  /** Inset of each X arm from the tile edge. */
+  inset: 8,
+} as const;
 /** Gun tracer: color, thickness and fade time of the shot line. */
 const TRACER_COLOR = 0xffe040;
 const TRACER_WIDTH = 3;
@@ -227,6 +251,12 @@ export class GameScene extends Phaser.Scene {
   private pendingTrigger = false;
 
   private playerSprites = new Map<string, Phaser.GameObjects.Image>();
+  /** Start-of-match arrow over the local player; null once it has faded out. */
+  private myPointer: Phaser.GameObjects.Triangle | null = null;
+  /** Hover offset for the arrow, tweened separately so it can also follow. */
+  private myPointerBob = { y: 0 };
+  /** Crosshair over the tile a held hammer would strike; null until armed. */
+  private hammerTarget: Phaser.GameObjects.Graphics | null = null;
   /** Overhead skill icons per player, keyed by SKILL_BADGES entry. */
   private skillBadges = new Map<string, Map<string, SkillBadge>>();
   /** Previous-frame badge values per player, to detect a 0 -> >0 pickup. */
@@ -272,6 +302,9 @@ export class GameScene extends Phaser.Scene {
     this.prevGunAmmo.clear();
     this.prevHammerUses.clear();
     this.playerSprites.clear();
+    this.myPointer = null;
+    this.myPointerBob.y = 0;
+    this.hammerTarget = null;
     this.skillBadges.clear();
     this.prevSkillValues.clear();
     this.softBlockSprites.clear();
@@ -324,6 +357,57 @@ export class GameScene extends Phaser.Scene {
     this.reconcile(initial);
     this.updateHud(initial);
     this.positionPlayers(initial, 1);
+    this.showMyPointer();
+  }
+
+  /**
+   * Points out which of the four look-alike characters is yours at the start of
+   * a match. The arrow follows the sprite (positionPlayers moves it), hovers on
+   * a tween, then fades out and is gone for the rest of the match.
+   */
+  private showMyPointer(): void {
+    const sprite = this.playerSprites.get(this.myId);
+    if (!sprite) return;
+    const { width, height, color, bob, bobMs, holdMs, fadeMs } = MY_POINTER;
+    // Downward-pointing triangle, tip at the bottom (toward the head).
+    const place = this.myPointerPlacement(sprite);
+    const arrow = this.add
+      .triangle(sprite.x, place.y, 0, 0, width, 0, width / 2, height, color)
+      .setRotation(place.flip ? Math.PI : 0)
+      .setDepth(DEPTH.hud - 1);
+    this.myPointer = arrow;
+    this.tweens.add({
+      targets: this.myPointerBob,
+      y: -bob,
+      duration: bobMs,
+      ease: 'Sine.easeInOut',
+      yoyo: true,
+      repeat: -1,
+    });
+    this.tweens.add({
+      targets: arrow,
+      alpha: 0,
+      delay: holdMs,
+      duration: fadeMs,
+      onComplete: () => {
+        arrow.destroy();
+        if (this.myPointer === arrow) this.myPointer = null;
+      },
+    });
+  }
+
+  /**
+   * Arrow placement: above the head by default (tip down), clear of the
+   * overhead skill badge row. Near the top of the map that spot clips behind
+   * the HUD bar, so flip the arrow below the feet (tip up) instead.
+   */
+  private myPointerPlacement(sprite: Phaser.GameObjects.Image): { y: number; flip: boolean } {
+    const { gap, height } = MY_POINTER;
+    const above = sprite.y - SPRITE_SIZE.playerHeight - gap + this.myPointerBob.y;
+    if (above - height / 2 < HUD_HEIGHT + 4) {
+      return { y: sprite.y + gap - this.myPointerBob.y, flip: true };
+    }
+    return { y: above, flip: false };
   }
 
   /**
@@ -817,7 +901,55 @@ export class GameScene extends Phaser.Scene {
       } else sprite.clearTint();
 
       this.updateSkillBadges(player, sprite, warning, blinkOn);
+
+      if (this.myPointer && player.id === this.myId) {
+        const place = this.myPointerPlacement(sprite);
+        this.myPointer.setPosition(sprite.x, place.y).setRotation(place.flip ? Math.PI : 0);
+      }
+      if (player.id === this.myId) this.updateHammerTarget(player);
     }
+  }
+
+  /**
+   * Red X over the tile the held hammer will hit, so melee aim is obvious.
+   * Follows the local player's facing; hidden while the hammer isn't the armed
+   * skill (a held gun takes the trigger first), the player is dead, or the
+   * target tile is off-grid.
+   */
+  private updateHammerTarget(me: RenderPlayer): void {
+    const armed = me.alive && me.hammerUses > 0 && me.gunAmmo === 0;
+    const [dc, dr] = DIR_STEP[me.facing];
+    const col = Math.round(me.x) + dc;
+    const row = Math.round(me.y) + dr;
+    const onGrid = col >= 0 && col < GRID_WIDTH && row >= 0 && row < GRID_HEIGHT;
+    if (!armed || !onGrid) {
+      this.hammerTarget?.setVisible(false);
+      return;
+    }
+    if (!this.hammerTarget) this.hammerTarget = this.createHammerTarget();
+    this.hammerTarget.setVisible(true).setPosition(toX(col), toY(row));
+  }
+
+  private createHammerTarget(): Phaser.GameObjects.Graphics {
+    const { color, width, inset } = HAMMER_TARGET;
+    const arm = TILE_SIZE / 2 - inset;
+    const g = this.add.graphics().setDepth(DEPTH.player - 0.5);
+    g.lineStyle(width, color, 0.9);
+    g.beginPath();
+    g.moveTo(-arm, -arm);
+    g.lineTo(arm, arm);
+    g.moveTo(arm, -arm);
+    g.lineTo(-arm, arm);
+    g.strokePath();
+    this.tweens.add({
+      targets: g,
+      alpha: { from: 0.45, to: 1 },
+      duration: 480,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut',
+    });
+    return g;
   }
 
   /**
@@ -1206,8 +1338,16 @@ export class GameScene extends Phaser.Scene {
         .setDepth(DEPTH.overlay);
     });
 
+    const playAgain = (): void => {
+      this.scene.restart({
+        mode: 'offline',
+        seed: Date.now() >>> 0,
+        mapId: this.mapId,
+      } satisfies GameSceneData);
+    };
+
     const again = this.add
-      .text(cx, cy + 110, 'Play again', {
+      .text(cx, cy + 110, 'Play again  [Enter]', {
         fontFamily: 'monospace',
         fontSize: '28px',
         color: '#ffe040',
@@ -1218,13 +1358,9 @@ export class GameScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
     again.on('pointerover', () => again.setColor('#ffffff'));
     again.on('pointerout', () => again.setColor('#ffe040'));
-    again.on('pointerdown', () => {
-      this.scene.restart({
-        mode: 'offline',
-        seed: Date.now() >>> 0,
-        mapId: this.mapId,
-      } satisfies GameSceneData);
-    });
+    again.on('pointerdown', playAgain);
+    // Enter is the keyboard equivalent of the button (once: one restart only).
+    this.input.keyboard?.once('keydown-ENTER', playAgain);
 
     const back = this.add
       .text(cx, cy + 150, 'Back to menu', {
@@ -1334,7 +1470,7 @@ export class GameScene extends Phaser.Scene {
 
     if (isHost) {
       const cont = this.add
-        .text(cx, controlsY, 'Continue', {
+        .text(cx, controlsY, 'Continue  [Enter]', {
           fontFamily: 'monospace',
           fontSize: '28px',
           color: '#ffe040',
@@ -1345,7 +1481,11 @@ export class GameScene extends Phaser.Scene {
         .setInteractive({ useHandCursor: true });
       cont.on('pointerover', () => cont.setColor('#ffffff'));
       cont.on('pointerout', () => cont.setColor('#ffe040'));
-      cont.on('pointerdown', () => room.send('backToLobby'));
+      const goOn = (): void => room.send('backToLobby');
+      cont.on('pointerdown', goOn);
+      // Host-only: Enter continues. The scene's keyboard listeners are dropped
+      // on shutdown, so a resent message after leaving is not a concern.
+      this.input.keyboard?.on('keydown-ENTER', goOn);
     } else {
       this.add
         .text(cx, controlsY, 'waiting for host…', {

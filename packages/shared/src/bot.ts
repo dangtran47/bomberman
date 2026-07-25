@@ -1,4 +1,9 @@
-import { GRID_HEIGHT, GRID_WIDTH } from './constants';
+import {
+  BOT_GUN_ATTACK_CHANCE,
+  BOT_HAMMER_ATTACK_CHANCE,
+  GRID_HEIGHT,
+  GRID_WIDTH,
+} from './constants';
 import { SHRINK_ORDER, shrinkCountAtTick } from './suddenDeath';
 import { TileType } from './types';
 import type { GameState } from './game';
@@ -244,7 +249,7 @@ function skillAim(
   col: number,
   row: number,
   enemyTiles: Set<number>,
-): Direction | null {
+): { dir: Direction; enemy: boolean } | null {
   let softAim: Direction | null = null;
   for (const { dc, dr, dir } of NEIGHBOR_STEPS) {
     const reach = weapon === 'hammer' ? 1 : Number.POSITIVE_INFINITY;
@@ -259,10 +264,10 @@ function skillAim(
         break;
       }
       if (ctx.bombTiles.has(key(c, r))) break;
-      if (enemyTiles.has(key(c, r))) return dir; // kill beats digging
+      if (enemyTiles.has(key(c, r))) return { dir, enemy: true }; // kill beats digging
     }
   }
-  return softAim;
+  return softAim === null ? null : { dir: softAim, enemy: false };
 }
 
 /**
@@ -282,15 +287,23 @@ function useSkill(
   cooldown: number,
   enemyTiles: Set<number>,
   blockUnsafe: (col: number, row: number) => boolean,
+  rng: () => number,
 ): PlayerInput | null {
   const aim = skillAim(ctx, weapon, col, row, enemyTiles);
   if (aim !== null) {
     // Cooling down: hold position on a tile that already has a target rather
     // than wander off; the cooldown ticks down and the swing lands next.
     if (cooldown > 0) return { direction: null, placeBomb: false };
+    // Combat nerf: attacking an enemy only lands on a fraction of ready ticks,
+    // so the bot hesitates instead of killing the instant it lines up (gives
+    // the player a dodge window). Digging soft blocks always fires.
+    if (aim.enemy) {
+      const chance = weapon === 'hammer' ? BOT_HAMMER_ATTACK_CHANCE : BOT_GUN_ATTACK_CHANCE;
+      if (rng() >= chance) return { direction: null, placeBomb: false }; // hold fire this tick
+    }
     return weapon === 'gun'
-      ? { direction: aim, placeBomb: false, fireGun: true }
-      : { direction: aim, placeBomb: false, swingHammer: true };
+      ? { direction: aim.dir, placeBomb: false, fireGun: true }
+      : { direction: aim.dir, placeBomb: false, swingHammer: true };
   }
   const nodes = flood(ctx, col, row, blockUnsafe);
   for (let i = 1; i < nodes.length; i++) {
@@ -348,6 +361,7 @@ export function createBot(playerId: string, rng: () => number): Bot {
           me.actionCooldown,
           enemyTiles,
           blockUnsafe,
+          rng,
         );
         if (action) return action;
         // No target reachable: fall through to idle (never placeBomb, which

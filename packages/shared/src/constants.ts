@@ -41,6 +41,12 @@ export const GUN_AMMO_PER_PICKUP = 2;
 export const HAMMER_USES_PER_PICKUP = 3;
 export const SKILL_ACTION_COOLDOWN_TICKS = 6; // shared gun/hammer cooldown
 
+// Bot combat nerf: when a weapon is off cooldown and an enemy is lined up, the
+// bot only attacks this fraction of ticks (rolls its rng, else holds fire for a
+// tick). Digging soft blocks is unaffected. Lower = weaker bot, more dodge room.
+export const BOT_HAMMER_ATTACK_CHANCE = 0.3; // melee, priority weapon -> harder nerf
+export const BOT_GUN_ATTACK_CHANCE = 0.5;
+
 export const SUDDEN_DEATH_START_TICKS = 2400; // 2min at 20tps
 export const SUDDEN_DEATH_INTERVAL_TICKS = 10; // one tile per 0.5s
 /** Border rings converted before the shrink stops (leaves rows 4-8 x cols 4-10 open). */
