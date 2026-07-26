@@ -124,6 +124,11 @@ function worldDepth(row: number, layer: number): number {
  * center (too high/floaty); the shadow tracks this same offset.
  */
 const PLAYER_FOOT_OFFSET = 12;
+/** Walking bob: vertical sine amplitude (px) and frequency (Hz). Visual only. */
+const WALK_BOB_PX = 1.5;
+const WALK_BOB_HZ = 8;
+/** Position delta (tiles/frame) below which a player counts as standing still. */
+const WALK_EPSILON = 0.002;
 /** Bomb pulse tween grows the sprite to this multiple of its base scale. */
 const BOMB_PULSE = 1.15;
 /** Max random tilt (radians) applied to each explosion pom, visual only. */
@@ -375,6 +380,8 @@ export class GameScene extends Phaser.Scene {
   private triggerServedSkill = false;
 
   private playerSprites = new Map<string, Phaser.GameObjects.Image>();
+  /** Per-player walking-bob state: sine phase and last-seen position. */
+  private walkAnim = new Map<string, { phase: number; lastX: number; lastY: number }>();
   /** Start-of-match arrow over the local player; null once it has faded out. */
   private myPointer: Phaser.GameObjects.Triangle | null = null;
   /** Hover offset for the arrow, tweened separately so it can also follow. */
@@ -430,6 +437,7 @@ export class GameScene extends Phaser.Scene {
     this.prevGunAmmo.clear();
     this.prevHammerUses.clear();
     this.playerSprites.clear();
+    this.walkAnim.clear();
     this.myPointer = null;
     this.myPointerBob.y = 0;
     this.hammerTarget = null;
@@ -504,7 +512,7 @@ export class GameScene extends Phaser.Scene {
     this.createHud();
     this.reconcile(initial);
     this.updateHud(initial);
-    this.positionPlayers(initial, 1);
+    this.positionPlayers(initial, 1, 0);
     this.showMyPointer();
   }
 
@@ -604,7 +612,7 @@ export class GameScene extends Phaser.Scene {
     // Fell too far behind (tab hidden, etc.): drop the backlog instead of spiraling.
     if (this.accumulator >= TICK_MS) this.accumulator = 0;
 
-    this.positionPlayers(this.sim!.state, 1);
+    this.positionPlayers(this.sim!.state, 1, delta);
   }
 
   private stepSim(): void {
@@ -729,7 +737,7 @@ export class GameScene extends Phaser.Scene {
     // Everything snaps, because every target is already smooth: a predicted own
     // player by its prediction error decay, everyone else (including our own
     // player when there is no predictor) by the interpolation buffer.
-    this.positionPlayers(state, 1);
+    this.positionPlayers(state, 1, delta);
 
     if (room.state.phase === 'finished' && !this.gameOver) {
       this.showRanking();
@@ -1105,13 +1113,28 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Moves player sprites; lerp=1 snaps, lower values smooth toward the target. */
-  private positionPlayers(state: Pick<RenderState, 'players'>, lerp: number): void {
+  private positionPlayers(state: Pick<RenderState, 'players'>, lerp: number, delta: number): void {
     for (const player of state.players) {
       const sprite = this.playerSprites.get(player.id);
       if (!sprite) continue;
       const tx = toX(player.x);
       const ty = toY(player.y) + PLAYER_FOOT_OFFSET; // feet at cell center
-      sprite.setPosition(sprite.x + (tx - sprite.x) * lerp, sprite.y + (ty - sprite.y) * lerp);
+
+      let anim = this.walkAnim.get(player.id);
+      if (!anim) {
+        anim = { phase: 0, lastX: player.x, lastY: player.y };
+        this.walkAnim.set(player.id, anim);
+      }
+      const moving =
+        player.alive &&
+        (Math.abs(player.x - anim.lastX) > WALK_EPSILON ||
+          Math.abs(player.y - anim.lastY) > WALK_EPSILON);
+      anim.lastX = player.x;
+      anim.lastY = player.y;
+      anim.phase = moving ? anim.phase + (delta / 1000) * WALK_BOB_HZ * Math.PI * 2 : 0;
+      const bob = moving ? Math.abs(Math.sin(anim.phase)) * -WALK_BOB_PX : 0;
+
+      sprite.setPosition(sprite.x + (tx - sprite.x) * lerp, sprite.y + (ty + bob - sprite.y) * lerp);
       sprite.setDepth(worldDepth(player.y, WORLD_LAYER.player));
       sprite.setAlpha(player.alive ? 1 : 0.3); // dead players linger as ghosts
       // Kick active: solid cyan tint; over the last warning ticks blink to red.
