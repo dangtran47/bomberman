@@ -40,9 +40,10 @@ interface PlayerEntry {
  *
  * The reproduction is exact modulo queue starvation: when a TCP stall empties the
  * queue, the dry-hold keeps repeating the last direction for ticks the client never
- * sent, so those ticks are the server's invention rather than a replay. The stalled
- * inputs are not lost — they all still apply once they arrive — but a stall stretches
- * a hold rather than pausing it.
+ * sent, so those ticks are the server's invention rather than a replay. Stalled
+ * inputs still apply once they arrive within the backlog cap; a longer stall drops
+ * the oldest queued inputs per MAX_QUEUE. Either way a stall stretches a hold
+ * rather than pausing it.
  */
 export class InputQueue {
   private readonly players = new Map<string, PlayerEntry>();
