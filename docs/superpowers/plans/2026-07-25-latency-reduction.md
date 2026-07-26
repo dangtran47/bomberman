@@ -25,6 +25,9 @@ Fly's upstream transit is not under our control.
 
 ### Perceived input→see-it delay (own move, no prediction) ≈ 180ms
 
+(as of investigation; superseded by #2/#3 below — own-move feel no longer pays
+uplink/tick/lerp)
+
 ```
 input sample (render frame)   ~16ms
 uplink (ping/2)                25ms
@@ -67,7 +70,9 @@ Superseded plan: `docs/superpowers/plans/2026-07-25-client-prediction.md`
 Built via `docs/superpowers/plans/2026-07-26-netcode-prediction-v2.md` (this branch).
 Replaced the exp lerp (`ONLINE_LERP=0.35`, ~100ms convergence tail) with a time-based
 100ms snapshot buffer, lerping remote players between two buffered snapshots by
-timestamp. Bounds remote delay to ~1 tick and reads smoother than the old exp settle.
+timestamp. Remotes render ~100ms (~2 ticks) in the past, interpolating between
+bracketing snapshots — a fixed, smooth delay instead of the old exp lerp's variable
+settle tail.
 
 ### 🟡 4. Raise tick + patch rate 20→30Hz — BLOCKED on dedicated CPU
 30Hz halves the tick-wait window (25→17ms avg). BUT `shared-cpu-1x` can't sustain
