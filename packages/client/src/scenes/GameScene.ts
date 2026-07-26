@@ -475,12 +475,14 @@ export class GameScene extends Phaser.Scene {
       data.connection.room.state.players.forEach((p, id) =>
         this.characterByPlayer.set(id, p.character),
       );
-      // Every patch is a snapshot of where the server says the remotes are;
-      // rendering samples this history INTERP_DELAY_MS in the past.
+      // Every patch is a snapshot of where the server says everyone is;
+      // rendering samples this history INTERP_DELAY_MS in the past. Our own
+      // player is recorded too: it is unused while predicted, but against an
+      // old server (no acks, no predictor) it is what smooths our own sprite.
       const onPatch = (): void => {
         const positions = new Map<string, { x: number; y: number }>();
         data.connection.room.state.players.forEach((p, id) => {
-          if (id !== this.myId) positions.set(id, { x: p.x, y: p.y });
+          positions.set(id, { x: p.x, y: p.y });
         });
         this.snapshots.push(performance.now(), positions);
       };
@@ -724,8 +726,9 @@ export class GameScene extends Phaser.Scene {
     this.trackOnlineDeaths(state);
     this.trackOnlineSkillUse(state);
     this.updateHud(state);
-    // Everything snaps: own player is smoothed by its prediction error decay,
-    // remotes by the interpolation buffer, so both targets are already smooth.
+    // Everything snaps, because every target is already smooth: a predicted own
+    // player by its prediction error decay, everyone else (including our own
+    // player when there is no predictor) by the interpolation buffer.
     this.positionPlayers(state, 1);
 
     if (room.state.phase === 'finished' && !this.gameOver) {
