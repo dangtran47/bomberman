@@ -24,6 +24,8 @@ export class PlayerSchema extends Schema {
   @type('string') facing = 'down';
   @type('number') wins = 0;
   @type('number') placement = 0;
+  /** Seq of this player's last input applied to a tick; clients reconcile against it. */
+  @type('number') lastInputSeq = 0;
 }
 
 export class BombSchema extends Schema {

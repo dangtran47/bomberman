@@ -17,7 +17,7 @@ import {
 } from '@bomberman/shared';
 import type { Bot, Game } from '@bomberman/shared';
 import { registerRoomCode, releaseRoomCode } from '../roomCodes';
-import { InputBuffer } from './inputBuffer';
+import { InputQueue } from './inputQueue';
 import { PlayerSchema, RoomState, copySimToSchema } from './schema';
 
 const MAX_PLAYERS = 4;
@@ -43,7 +43,7 @@ export class GameRoom extends Room<RoomState> {
 
   /** sessionId -> playerId slot (humans only), in join order for host succession. */
   private readonly slots = new Map<string, string>();
-  private readonly inputBuffer = new InputBuffer();
+  private readonly inputQueue = new InputQueue();
   private sim: Game | null = null;
   private bots: { id: string; bot: Bot }[] = [];
   private teardownTimer: Delayed | null = null;
@@ -56,7 +56,7 @@ export class GameRoom extends Room<RoomState> {
     this.onMessage('input', (client, message: unknown) => {
       if (this.state.phase !== 'playing') return;
       const playerId = this.slots.get(client.sessionId);
-      if (playerId) this.inputBuffer.set(playerId, message);
+      if (playerId) this.inputQueue.push(playerId, message);
     });
 
     // Ping echo for client-side RTT measurement; replies only to the sender in
@@ -144,7 +144,7 @@ export class GameRoom extends Room<RoomState> {
     const playerId = this.slots.get(client.sessionId);
     if (!playerId) return;
     this.slots.delete(client.sessionId);
-    this.inputBuffer.remove(playerId);
+    this.inputQueue.remove(playerId);
 
     if (this.state.phase === 'lobby') {
       this.state.players.delete(playerId);
@@ -210,13 +210,19 @@ export class GameRoom extends Room<RoomState> {
 
   private simTick(): void {
     if (!this.sim) return;
-    const inputs = this.inputBuffer.consume();
+    const inputs = this.inputQueue.consume();
     for (const { id, bot } of this.bots) {
       inputs.set(id, bot.computeInput(this.sim.state));
     }
 
     const events = this.sim.tick(inputs);
     copySimToSchema(this.sim.state, this.state);
+
+    // Ack the last input applied per human slot; clients reconcile against it.
+    for (const playerId of this.slots.values()) {
+      const ps = this.state.players.get(playerId);
+      if (ps) ps.lastInputSeq = this.inputQueue.acked(playerId);
+    }
 
     for (const event of events) {
       if (event.type === 'blockDestroyed') {
@@ -253,7 +259,7 @@ export class GameRoom extends Room<RoomState> {
     this.teardownTimer = null;
     this.sim = null;
     this.bots = [];
-    this.inputBuffer.clear();
+    this.inputQueue.clear();
 
     const humanIds = new Set(this.slots.values());
     for (const [id, ps] of [...this.state.players]) {

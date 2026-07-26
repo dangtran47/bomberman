@@ -111,17 +111,23 @@ describe('create/join/start/move flow', () => {
         await until(() => guest.state.tick > 0, 3000, 'ticks advancing');
 
         // p0 spawns at (0,0); moving right must increase x, visible to the guest.
-        host.send('input', { direction: 'right', placeBomb: false });
+        // A single seq'd input is applied for one tick, then held while the
+        // queue is dry, so one message is enough to cover ground here.
+        host.send('input', { seq: 1, direction: 'right', placeBomb: false });
         await until(() => guest.state.players.get('p0').x > 0.2, 3000, 'p0 moved right');
 
         // Room is locked after start: joining by id must fail.
         await expect(new Client(wsUrl).joinById(roomId, { nickname: 'Carol' })).rejects.toThrow();
 
-        // Sticky bomb: a press between ticks is consumed, bomb appears in state.
-        host.send('input', { direction: null, placeBomb: true });
+        // Next queued input places a bomb; the bomb appears in state.
+        host.send('input', { seq: 2, direction: null, placeBomb: true });
         await until(() => guest.state.bombs.size === 1, 3000, 'bomb visible');
         const bomb = [...guest.state.bombs.values()][0];
         expect(bomb.ownerId).toBe('p0');
+
+        // The tick that consumed seq 2 acks it back to the clients.
+        await until(() => guest.state.players.get('p0').lastInputSeq === 2, 3000, 'seq 2 acked');
+        expect(guest.state.players.get('p0').lastInputSeq).toBe(2);
       } finally {
         await guest.leave();
       }
