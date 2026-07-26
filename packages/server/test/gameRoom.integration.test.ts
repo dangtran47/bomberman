@@ -212,6 +212,10 @@ describe('create/join/start/move flow', () => {
       await until(() => host.state.phase === 'playing', 3000, 'phase playing');
       expect(host.state.players.size).toBe(4);
 
+      // Get an ack on the board so the lobby reset has something to clear.
+      host.send('input', { seq: 1, direction: 'right', placeBomb: false });
+      await until(() => host.state.players.get('p0').lastInputSeq === 1, 3000, 'seq 1 acked');
+
       // Reach into the live room and end the match deterministically: kill every
       // bot (distinct deathTicks) while the host survives, so the next sim tick
       // fires gameEnded with the host as winner.
@@ -252,6 +256,7 @@ describe('create/join/start/move flow', () => {
       // Survivor keeps identity + score; placement lingers as last result.
       const stillHere = host.state.players.get('p0');
       expect(stillHere.character).toBe(champChar);
+      expect(stillHere.lastInputSeq).toBe(0); // acks restart with the next match
       expect(stillHere.wins).toBe(1);
       expect(stillHere.alive).toBe(true);
 

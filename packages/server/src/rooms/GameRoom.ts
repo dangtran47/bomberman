@@ -283,6 +283,9 @@ export class GameRoom extends Room<RoomState> {
       ps.gunAmmo = 0;
       ps.hammerUses = 0;
       ps.facing = 'down';
+      // The queue was cleared, so acks restart at 0: never publish a stale seq
+      // from the last match to a client that restarts its sequence at 1.
+      ps.lastInputSeq = 0;
       // keep character, wins, placement (placement shows last result until next match)
     }
     this.state.bombs.clear();
