@@ -27,6 +27,7 @@ import type {
 } from '@bomberman/shared';
 import { audio } from '../audio';
 import { GUN_KEY, HAMMER_KEY, SKILL_KEY_LABEL } from '../controls';
+import { INTERP_DELAY_MS, SnapshotBuffer } from '../interpolation';
 import type { GameRoomConnection, NetPlayer, NetRoomState } from '../net';
 import { Predictor } from '../prediction';
 import type { PredictedPlayer } from '../prediction';
@@ -57,8 +58,6 @@ const HUMAN_ID = 'p0';
 const PLAYER_IDS = ['p0', 'p1', 'p2', 'p3'];
 /** Max sim steps per frame; if further behind, the backlog is dropped. */
 const MAX_STEPS_PER_FRAME = 5;
-/** Exponential smoothing factor for online sprite positions (per frame). */
-const ONLINE_LERP = 0.35;
 /** Time constant (ms) for bleeding off prediction corrections. */
 const PREDICTION_ERROR_SMOOTH_MS = 100;
 /** Online: measure round-trip time by echoing a ping this often. */
@@ -162,10 +161,8 @@ const HAMMER_TARGET = {
 } as const;
 /**
  * Foot shadow: a soft dark ellipse anchored under the local player's rendered
- * sprite, tracking the same lerp-smoothed position the sprite uses. Anchoring to
- * the sprite (not the logical cell center) keeps the shadow glued to the feet
- * online — anchoring to toX/toY of player.x/y snaps to the logical target while
- * the sprite lerps behind, making the shadow look like it runs ahead.
+ * sprite. Anchoring to the sprite (not the logical cell center) keeps the
+ * shadow glued to the feet wherever the sprite is actually drawn.
  */
 const FOOT_SHADOW = {
   color: 0x000000,
@@ -310,7 +307,7 @@ export interface RenderState {
  * One match. Offline: local sim (p0) vs 3 bots on a fixed-tick accumulator.
  * Online: authoritative server state, with our own player predicted locally on
  * the same fixed tick and reconciled against the server's input acks; remote
- * players are still rendered with interpolation only.
+ * players are rendered from the snapshot buffer, INTERP_DELAY_MS in the past.
  */
 export class GameScene extends Phaser.Scene {
   private mode: 'offline' | 'online' = 'offline';
@@ -336,6 +333,8 @@ export class GameScene extends Phaser.Scene {
   private appliedDestroyed = 0;
   private appliedShrunk = 0;
   private predictor: Predictor | null = null;
+  /** Time-stamped remote positions; sampled INTERP_DELAY_MS in the past. */
+  private snapshots = new SnapshotBuffer();
   /** Rendered-minus-predicted offset, decayed toward 0 (~100ms) to hide corrections. */
   private predictionError = { x: 0, y: 0 };
   private lastAcked = 0;
@@ -416,6 +415,7 @@ export class GameScene extends Phaser.Scene {
     this.appliedDestroyed = 0;
     this.appliedShrunk = 0;
     this.predictor = null;
+    this.snapshots = new SnapshotBuffer();
     this.predictionError = { x: 0, y: 0 };
     this.lastAcked = 0;
     this.pingMs = null;
@@ -475,8 +475,19 @@ export class GameScene extends Phaser.Scene {
       data.connection.room.state.players.forEach((p, id) =>
         this.characterByPlayer.set(id, p.character),
       );
+      // Every patch is a snapshot of where the server says the remotes are;
+      // rendering samples this history INTERP_DELAY_MS in the past.
+      const onPatch = (): void => {
+        const positions = new Map<string, { x: number; y: number }>();
+        data.connection.room.state.players.forEach((p, id) => {
+          if (id !== this.myId) positions.set(id, { x: p.x, y: p.y });
+        });
+        this.snapshots.push(performance.now(), positions);
+      };
+      data.connection.room.onStateChange(onPatch);
       data.connection.room.onLeave(this.onRoomLeave);
       this.events.once('shutdown', () => {
+        data.connection.room.onStateChange.remove(onPatch);
         data.connection.room.onLeave.remove(this.onRoomLeave);
       });
       data.connection.room.onMessage('pong', (t: number) => {
@@ -713,8 +724,9 @@ export class GameScene extends Phaser.Scene {
     this.trackOnlineDeaths(state);
     this.trackOnlineSkillUse(state);
     this.updateHud(state);
-    // Our own sprite snaps: the prediction error decay is already its smoothing.
-    this.positionPlayers(state, ONLINE_LERP, new Set(this.predictor ? [this.myId] : []));
+    // Everything snaps: own player is smoothed by its prediction error decay,
+    // remotes by the interpolation buffer, so both targets are already smooth.
+    this.positionPlayers(state, 1);
 
     if (room.state.phase === 'finished' && !this.gameOver) {
       this.showRanking();
@@ -779,6 +791,18 @@ export class GameScene extends Phaser.Scene {
       if (own && own.alive) {
         own.x = this.predictor.player.x + this.predictionError.x;
         own.y = this.predictor.player.y + this.predictionError.y;
+      }
+    }
+    // Remote players render slightly in the past, interpolated between the two
+    // snapshots bracketing that time. Positions only — every other field stays
+    // at the server's latest value.
+    const renderT = performance.now() - INTERP_DELAY_MS;
+    for (const p of players) {
+      if (p.id === this.myId && this.predictor) continue;
+      const s = this.snapshots.sample(p.id, renderT);
+      if (s) {
+        p.x = s.x;
+        p.y = s.y;
       }
     }
 
@@ -1077,23 +1101,14 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /**
-   * Moves player sprites; lerp=1 snaps, lower values smooth (online). Ids in
-   * `snapIds` always snap — a predicted player is already smoothed by its
-   * error decay, so lerping it on top would only add lag.
-   */
-  private positionPlayers(
-    state: Pick<RenderState, 'players'>,
-    lerp: number,
-    snapIds?: Set<string>,
-  ): void {
+  /** Moves player sprites; lerp=1 snaps, lower values smooth toward the target. */
+  private positionPlayers(state: Pick<RenderState, 'players'>, lerp: number): void {
     for (const player of state.players) {
       const sprite = this.playerSprites.get(player.id);
       if (!sprite) continue;
       const tx = toX(player.x);
       const ty = toY(player.y) + PLAYER_FOOT_OFFSET; // feet at cell center
-      const k = snapIds?.has(player.id) ? 1 : lerp;
-      sprite.setPosition(sprite.x + (tx - sprite.x) * k, sprite.y + (ty - sprite.y) * k);
+      sprite.setPosition(sprite.x + (tx - sprite.x) * lerp, sprite.y + (ty - sprite.y) * lerp);
       sprite.setDepth(worldDepth(player.y, WORLD_LAYER.player));
       sprite.setAlpha(player.alive ? 1 : 0.3); // dead players linger as ghosts
       // Kick active: solid cyan tint; over the last warning ticks blink to red.
@@ -1139,9 +1154,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Moves the foot shadow under the local player's rendered sprite, tracking the
-   * same lerp-smoothed position the sprite uses so the shadow stays glued to the
-   * feet instead of snapping ahead to the logical cell. Hidden once dead.
+   * Moves the foot shadow under the local player's rendered sprite, so it stays
+   * glued to the feet instead of snapping to the logical cell. Hidden once dead.
    */
   private updateMyFootShadow(me: RenderPlayer, sprite: Phaser.GameObjects.Image): void {
     if (!me.alive) {
