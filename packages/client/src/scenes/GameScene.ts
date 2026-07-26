@@ -130,6 +130,8 @@ const WALK_BOB_PX = 1.5;
 const WALK_BOB_HZ = 8;
 /** Position delta (tiles/frame) below which a player counts as standing still. */
 const WALK_EPSILON = 0.002;
+/** Keep bobbing this long after the last position change: sim positions only move on 20Hz ticks. */
+const WALK_HOLD_MS = 120;
 /** Bomb pulse tween grows the sprite to this multiple of its base scale. */
 const BOMB_PULSE = 1.15;
 /** Max random tilt (radians) applied to each explosion pom, visual only. */
@@ -381,8 +383,16 @@ export class GameScene extends Phaser.Scene {
   private triggerServedSkill = false;
 
   private playerSprites = new Map<string, Phaser.GameObjects.Image>();
-  /** Per-player walking-bob state: sine phase and last-seen position. */
-  private walkAnim = new Map<string, { phase: number; lastX: number; lastY: number }>();
+  /** Per-player walking-bob state: sine phase, last-seen position, bob hold left (ms). */
+  private walkAnim = new Map<string, { phase: number; lastX: number; lastY: number; holdMs: number }>();
+  /**
+   * Position each tick-quantized player held *before* the last executed sim step.
+   * Rendering blends it with the current position by the leftover-accumulator
+   * fraction, so 20Hz sim positions come out as 60fps motion. Populated for every
+   * player offline, and for our own predicted player only online — remote players
+   * are already smoothed by the snapshot buffer.
+   */
+  private prevTickPos = new Map<string, { x: number; y: number }>();
   /** Start-of-match arrow over the local player; null once it has faded out. */
   private myPointer: Phaser.GameObjects.Triangle | null = null;
   /** Hover offset for the arrow, tweened separately so it can also follow. */
@@ -439,6 +449,7 @@ export class GameScene extends Phaser.Scene {
     this.prevHammerUses.clear();
     this.playerSprites.clear();
     this.walkAnim.clear();
+    this.prevTickPos.clear();
     this.myPointer = null;
     this.myPointerBob.y = 0;
     this.hammerTarget = null;
@@ -595,13 +606,18 @@ export class GameScene extends Phaser.Scene {
     let steps = 0;
     while (this.accumulator >= TICK_MS && steps < MAX_STEPS_PER_FRAME) {
       this.accumulator -= TICK_MS;
+      // Snapshot before every step, so after the loop this holds the state the
+      // LAST executed step started from — the near end of the render blend.
+      for (const p of this.sim!.state.players) this.prevTickPos.set(p.id, { x: p.x, y: p.y });
       this.stepSim();
       steps++;
     }
     // Fell too far behind (tab hidden, etc.): drop the backlog instead of spiraling.
     if (this.accumulator >= TICK_MS) this.accumulator = 0;
 
-    this.positionPlayers(this.sim!.state, 1, delta);
+    // Leftover time since the last tick, as a fraction of one tick.
+    const alpha = Math.min(1, this.accumulator / TICK_MS);
+    this.positionPlayers(this.sim!.state, 1, delta, alpha);
   }
 
   private stepSim(): void {
@@ -718,6 +734,14 @@ export class GameScene extends Phaser.Scene {
       );
       this.predictionError.x += err.dx;
       this.predictionError.y += err.dy;
+      // The rebase moved the predicted position by -err; shift the render blend's
+      // near end by the same amount so it stays on the new basis. Without this the
+      // correction the error term is hiding leaks back in as an alpha-scaled jump.
+      const prev = this.prevTickPos.get(this.myId);
+      if (prev) {
+        prev.x -= err.dx;
+        prev.y -= err.dy;
+      }
       // Past the threshold (a resumed stall, say) glide across the arena would be
       // worse than the single-frame jump, so drop the correction and snap.
       if (Math.hypot(this.predictionError.x, this.predictionError.y) > PREDICTION_ERROR_SNAP_TILES) {
@@ -736,10 +760,11 @@ export class GameScene extends Phaser.Scene {
     this.trackOnlineDeaths(state);
     this.trackOnlineSkillUse(state);
     this.updateHud(state);
-    // Everything snaps, because every target is already smooth: a predicted own
-    // player by its prediction error decay, everyone else (including our own
-    // player when there is no predictor) by the interpolation buffer.
-    this.positionPlayers(state, 1, delta);
+    // Everything snaps, because every target is already smooth: our own predicted
+    // player by the sub-tick blend below (plus its prediction error decay),
+    // everyone else by the interpolation buffer.
+    const alpha = Math.min(1, this.accumulator / TICK_MS);
+    this.positionPlayers(state, 1, delta, alpha);
 
     if (room.state.phase === 'finished' && !this.gameOver) {
       this.showRanking();
@@ -754,6 +779,8 @@ export class GameScene extends Phaser.Scene {
 
     let seq = 0;
     if (this.predictor) {
+      // Near end of the render blend: where we were before this step ran.
+      this.prevTickPos.set(this.myId, { x: this.predictor.player.x, y: this.predictor.player.y });
       const input = this.predictor.step(direction, bombHeld, this.grid!, this.iceMask, serverBombs);
       this.predictor.ageBombs();
       seq = input.seq;
@@ -797,13 +824,17 @@ export class GameScene extends Phaser.Scene {
       }),
     );
     players.sort((a, b) => a.id.localeCompare(b.id));
-    // Our own player renders from the prediction (plus the decaying correction);
-    // once the server says we are dead, the ghost falls back to its coordinates.
+    // Our own player renders from the raw prediction; positionPlayers blends it
+    // across the sub-tick and adds the decaying correction on top of that blend.
+    // Once the server says we are dead, the ghost falls back to its coordinates —
+    // and the blend's near end goes with it, since it is on the other basis.
     if (this.predictor) {
       const own = players.find((p) => p.id === this.myId);
       if (own && own.alive) {
-        own.x = this.predictor.player.x + this.predictionError.x;
-        own.y = this.predictor.player.y + this.predictionError.y;
+        own.x = this.predictor.player.x;
+        own.y = this.predictor.player.y;
+      } else {
+        this.prevTickPos.delete(this.myId);
       }
     }
     // Remote players render slightly in the past, interpolated between the two
@@ -1114,30 +1145,58 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** Moves player sprites; lerp=1 snaps, lower values smooth toward the target. */
-  private positionPlayers(state: Pick<RenderState, 'players'>, lerp: number, delta: number): void {
+  /**
+   * Moves player sprites; lerp=1 snaps, lower values smooth toward the target.
+   * `alpha` is the sub-tick fraction used to blend tick-quantized players (those
+   * with a `prevTickPos` entry) between their previous and current tick position,
+   * so a 20Hz sim renders as continuous 60fps motion. Visual only: nothing here
+   * writes back into any state the sim, predictor or network reads.
+   */
+  private positionPlayers(
+    state: Pick<RenderState, 'players'>,
+    lerp: number,
+    delta: number,
+    alpha = 1,
+  ): void {
     for (const player of state.players) {
       const sprite = this.playerSprites.get(player.id);
       if (!sprite) continue;
-      const tx = toX(player.x);
-      const ty = toY(player.y) + PLAYER_FOOT_OFFSET; // feet at cell center
+
+      let rx = player.x;
+      let ry = player.y;
+      const prev = this.prevTickPos.get(player.id);
+      if (prev) {
+        rx = prev.x + (player.x - prev.x) * alpha;
+        ry = prev.y + (player.y - prev.y) * alpha;
+        // Online own player: the render state carries the bare prediction, so the
+        // decaying correction rides on top of the blend (tile units, pre-toX()).
+        if (this.predictor && player.id === this.myId) {
+          rx += this.predictionError.x;
+          ry += this.predictionError.y;
+        }
+      }
+      const tx = toX(rx);
+      const ty = toY(ry) + PLAYER_FOOT_OFFSET; // feet at cell center
 
       let anim = this.walkAnim.get(player.id);
       if (!anim) {
-        anim = { phase: 0, lastX: player.x, lastY: player.y };
+        anim = { phase: 0, lastX: player.x, lastY: player.y, holdMs: 0 };
         this.walkAnim.set(player.id, anim);
       }
-      const moving =
-        player.alive &&
-        (Math.abs(player.x - anim.lastX) > WALK_EPSILON ||
-          Math.abs(player.y - anim.lastY) > WALK_EPSILON);
+      // Movement is judged on the tick position, which only changes every 50ms,
+      // so a single moving step holds the bob alive over the frames in between.
+      const stepped =
+        Math.abs(player.x - anim.lastX) > WALK_EPSILON ||
+        Math.abs(player.y - anim.lastY) > WALK_EPSILON;
       anim.lastX = player.x;
       anim.lastY = player.y;
+      anim.holdMs = stepped ? WALK_HOLD_MS : Math.max(0, anim.holdMs - delta);
+      const moving = player.alive && anim.holdMs > 0;
       anim.phase = moving ? anim.phase + (delta / 1000) * WALK_BOB_HZ * Math.PI * 2 : 0;
       const bob = moving ? Math.abs(Math.sin(anim.phase)) * -WALK_BOB_PX : 0;
 
       sprite.setPosition(sprite.x + (tx - sprite.x) * lerp, sprite.y + (ty + bob - sprite.y) * lerp);
-      sprite.setDepth(worldDepth(player.y, WORLD_LAYER.player));
+      sprite.setDepth(worldDepth(ry, WORLD_LAYER.player));
       sprite.setAlpha(player.alive ? 1 : 0.3); // dead players linger as ghosts
       // Kick active: solid cyan tint; over the last warning ticks blink to red.
       const warning = player.kickTicks > 0 && player.kickTicks <= KICK_WARNING_TICKS;
