@@ -37,6 +37,12 @@ interface PlayerEntry {
  * N client ticks therefore moves the player for exactly N server ticks — the
  * old latest-wins buffer quantized press/release against tick boundaries and
  * network jitter, which made the same hold cover different distances.
+ *
+ * The reproduction is exact modulo queue starvation: when a TCP stall empties the
+ * queue, the dry-hold keeps repeating the last direction for ticks the client never
+ * sent, so those ticks are the server's invention rather than a replay. The stalled
+ * inputs are not lost — they all still apply once they arrive — but a stall stretches
+ * a hold rather than pausing it.
  */
 export class InputQueue {
   private readonly players = new Map<string, PlayerEntry>();

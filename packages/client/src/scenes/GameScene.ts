@@ -7,7 +7,6 @@ import {
   SUDDEN_DEATH_START_TICKS,
   TICK_MS,
   TICK_RATE,
-  MAPS,
   TileType,
   compileMap,
   computePlacements,
@@ -60,6 +59,8 @@ const PLAYER_IDS = ['p0', 'p1', 'p2', 'p3'];
 const MAX_STEPS_PER_FRAME = 5;
 /** Time constant (ms) for bleeding off prediction corrections. */
 const PREDICTION_ERROR_SMOOTH_MS = 100;
+/** Correction size (tiles) past which a visible glide reads worse than a snap. */
+const PREDICTION_ERROR_SNAP_TILES = 1.5;
 /** Online: measure round-trip time by echoing a ping this often. */
 const PING_INTERVAL_MS = 2000;
 
@@ -578,18 +579,6 @@ export class GameScene extends Phaser.Scene {
     this.iceMask =
       this.compiled?.ice ?? Array.from({ length: GRID_HEIGHT }, () => Array<boolean>(GRID_WIDTH).fill(false));
     this.theme = def?.theme ?? 'classic';
-    // TEMP DEBUG (remove): why does winter render classic?
-    console.log('[MAPDBG] resolveMap', {
-      requested: mapId,
-      resolved: this.mapId,
-      theme: this.theme,
-      compiled: this.compiled !== null,
-      floorFrame: this.floorRef(1, 1),
-      winterFloorFrame: this.textures.exists('gameplay6')
-        ? this.textures.get('gameplay6').has('winter_floor')
-        : 'page-missing',
-      registryKeys: Object.keys(MAPS),
-    });
   }
 
   update(_time: number, delta: number): void {
@@ -708,6 +697,13 @@ export class GameScene extends Phaser.Scene {
     // Fell too far behind (tab hidden, etc.): drop the backlog instead of spiraling.
     if (this.accumulator >= TICK_MS) this.accumulator = 0;
 
+    // Grid deltas land before the replay below, not after it in renderStateFromRoom:
+    // an ack that arrives together with a block destruction must replay against the
+    // opened tile, or the replay walks into a wall the server already removed. Both
+    // are index-tracked and idempotent, so the later call is a no-op.
+    this.applyDestroyedBlocks(room.state);
+    this.applyArenaShrunk(room.state);
+
     // Reconcile: rebase onto the server's last-applied input, replay the rest.
     const own = room.state.players.get(this.myId);
     if (this.predictor && own && own.lastInputSeq !== this.lastAcked) {
@@ -722,6 +718,12 @@ export class GameScene extends Phaser.Scene {
       );
       this.predictionError.x += err.dx;
       this.predictionError.y += err.dy;
+      // Past the threshold (a resumed stall, say) glide across the arena would be
+      // worse than the single-frame jump, so drop the correction and snap.
+      if (Math.hypot(this.predictionError.x, this.predictionError.y) > PREDICTION_ERROR_SNAP_TILES) {
+        this.predictionError.x = 0;
+        this.predictionError.y = 0;
+      }
       this.lastAcked = own.lastInputSeq;
     }
     // Corrections slide out over ~100ms instead of snapping.
