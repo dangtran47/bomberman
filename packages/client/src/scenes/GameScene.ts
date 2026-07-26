@@ -63,6 +63,13 @@ const PREDICTION_ERROR_SMOOTH_MS = 100;
 const PREDICTION_ERROR_SNAP_TILES = 1.5;
 /** Online: measure round-trip time by echoing a ping this often. */
 const PING_INTERVAL_MS = 2000;
+/**
+ * Online: how long an optimistically collected powerup stays hidden while we
+ * wait for the server to confirm it. Confirmation normally lands within
+ * ~RTT + one tick, so a full second means something went wrong (the server saw
+ * us somewhere else, or blocked) — give up and put the sprite back.
+ */
+const PICKUP_ROLLBACK_MS = 1000;
 
 /** Inset (px per side) of a winter block sprite inside its tile, so the floor
  * shows through as a gap and the block reads as a raised object. */
@@ -414,6 +421,12 @@ export class GameScene extends Phaser.Scene {
   private powerupSprites = new Map<string, { sprite: Phaser.GameObjects.Image; ref: TexRef }>();
   /** Cells whose bomb vanished this reconcile pass — the explosion's origin. */
   private explosionCenters = new Set<string>();
+  /**
+   * Online: cells whose powerup we hid the moment our predicted body stepped
+   * onto it, mapped to the deadline past which we stop waiting for the server
+   * and unhide. Sprite + sound only; every stat stays server-authoritative.
+   */
+  private pendingPickups = new Map<string, number>();
 
   private hudText!: Phaser.GameObjects.Text;
   private suddenDeathText!: Phaser.GameObjects.Text;
@@ -461,6 +474,7 @@ export class GameScene extends Phaser.Scene {
     this.explosionSprites.clear();
     this.powerupSprites.clear();
     this.explosionCenters.clear();
+    this.pendingPickups.clear();
     this.characterByPlayer.clear();
     this.skillsPanel = [];
     this.skillsShown = false;
@@ -755,8 +769,17 @@ export class GameScene extends Phaser.Scene {
     this.predictionError.x *= decay;
     this.predictionError.y *= decay;
 
+    // Claim the powerup under our predicted feet before the server gets to it,
+    // so the sprite and the sound land on the frame we walk in rather than a
+    // round trip later. renderStateFromRoom then hides it for us.
+    this.trackOptimisticPickup();
+
     const state = this.renderStateFromRoom();
     this.reconcile(state);
+    // Retiring pending entries has to come after reconcile: the pass that sees
+    // the server's own removal still needs the entry to know it already played
+    // that pickup sound optimistically.
+    this.sweepPendingPickups();
     this.trackOnlineDeaths(state);
     this.trackOnlineSkillUse(state);
     this.updateHud(state);
@@ -797,6 +820,59 @@ export class GameScene extends Phaser.Scene {
       });
       this.pendingGun = false;
       this.pendingHammer = false;
+    }
+  }
+
+  /**
+   * Optimistic pickup: our own body is predicted, so it reaches a powerup about
+   * a round trip before the server's collection shows up in the synced state,
+   * and the item sits visibly under our feet in the meantime. Standing on one
+   * therefore hides it and plays the sound right away, and the cell is
+   * remembered so the sprite can come back if the server disagrees. Purely
+   * cosmetic — speed/bombs/blast still only move when the server says so.
+   */
+  private trackOptimisticPickup(): void {
+    const predictor = this.predictor;
+    if (!predictor || !predictor.player.alive) return;
+    const s: NetRoomState = this.connection!.room.state;
+    if (s.powerups.length === 0) return;
+
+    const col = Math.round(predictor.player.x);
+    const row = Math.round(predictor.player.y);
+    const key = cellKey(col, row);
+    if (this.pendingPickups.has(key)) return;
+
+    let here = false;
+    s.powerups.forEach((p) => {
+      if (p.col === col && p.row === row) here = true;
+    });
+    if (!here) return;
+    // Mirrors the sim: nothing is collected under an explosion, so claiming a
+    // powerup on a burning cell would always be rolled back (and we are dying).
+    let burning = false;
+    s.explosions.forEach((e) => {
+      if (e.col === col && e.row === row) burning = true;
+    });
+    if (burning) return;
+
+    this.pendingPickups.set(key, performance.now() + PICKUP_ROLLBACK_MS);
+    audio.powerup();
+  }
+
+  /**
+   * Retires pending pickups. A cell the server no longer lists a powerup on is
+   * confirmed (or the item burned) — the sprite is already gone and the sound
+   * already played, so just drop the entry. A cell past its deadline is a
+   * refusal: dropping it makes renderStateFromRoom surface the powerup again on
+   * the next frame, and reconcilePowerups rebuilds the sprite.
+   */
+  private sweepPendingPickups(): void {
+    if (this.pendingPickups.size === 0) return;
+    const live = new Set<string>();
+    this.connection!.room.state.powerups.forEach((p) => live.add(cellKey(p.col, p.row)));
+    const now = performance.now();
+    for (const [key, expiry] of this.pendingPickups) {
+      if (!live.has(key) || now >= expiry) this.pendingPickups.delete(key);
     }
   }
 
@@ -863,7 +939,12 @@ export class GameScene extends Phaser.Scene {
     const explosions: RenderState['explosions'] = [];
     s.explosions.forEach((e) => explosions.push({ col: e.col, row: e.row }));
     const powerups: RenderState['powerups'] = [];
-    s.powerups.forEach((p) => powerups.push({ col: p.col, row: p.row, type: p.type }));
+    // Powerups we already claimed optimistically are reported as gone, which is
+    // what makes their sprite vanish the instant we step on them.
+    s.powerups.forEach((p) => {
+      if (this.pendingPickups.has(cellKey(p.col, p.row))) return;
+      powerups.push({ col: p.col, row: p.row, type: p.type });
+    });
 
     return { tick: s.tick, grid: this.grid!, players, bombs, explosions, powerups };
   }
@@ -1612,7 +1693,9 @@ export class GameScene extends Phaser.Scene {
           const collected = state.players.some(
             (p) => p.alive && Math.round(p.x) === col && Math.round(p.y) === row,
           );
-          if (collected) audio.powerup();
+          // ...unless we claimed this cell optimistically, in which case the
+          // sound already played on the frame we stepped onto it.
+          if (collected && !this.pendingPickups.has(key)) audio.powerup();
         }
         this.tweens.killTweensOf(entry.sprite);
         entry.sprite.destroy();
