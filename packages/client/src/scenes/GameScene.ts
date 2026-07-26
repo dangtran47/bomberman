@@ -27,7 +27,9 @@ import type {
 } from '@bomberman/shared';
 import { audio } from '../audio';
 import { GUN_KEY, HAMMER_KEY, SKILL_KEY_LABEL } from '../controls';
-import type { GameRoomConnection, NetRoomState } from '../net';
+import type { GameRoomConnection, NetPlayer, NetRoomState } from '../net';
+import { Predictor } from '../prediction';
+import type { PredictedPlayer } from '../prediction';
 import { KICK_TINT, SPRITE_SIZE, TEX, TEXT_RES, TILE_SIZE, addImage } from '../textures';
 import type { TexRef } from '../textures';
 import { buildSkillsTable } from '../skillsTable';
@@ -57,8 +59,8 @@ const PLAYER_IDS = ['p0', 'p1', 'p2', 'p3'];
 const MAX_STEPS_PER_FRAME = 5;
 /** Exponential smoothing factor for online sprite positions (per frame). */
 const ONLINE_LERP = 0.35;
-/** Online: resend the current input this often even without changes. */
-const KEEPALIVE_MS = 100;
+/** Time constant (ms) for bleeding off prediction corrections. */
+const PREDICTION_ERROR_SMOOTH_MS = 100;
 /** Online: measure round-trip time by echoing a ping this often. */
 const PING_INTERVAL_MS = 2000;
 
@@ -277,6 +279,24 @@ interface SkillBadge {
   count: Phaser.GameObjects.Text | null;
 }
 
+/** Rebase snapshot of our own synced player, '' mapped back to null. */
+function predictedFromNet(p: NetPlayer): PredictedPlayer {
+  return {
+    x: p.x,
+    y: p.y,
+    speed: p.speed,
+    kickTicks: p.kickTicks,
+    momentumDir: (p.momentumDir || null) as PredictedPlayer['momentumDir'],
+    momentumTicks: p.momentumTicks,
+    turnTicks: p.turnTicks,
+    laneDir: (p.laneDir || null) as PredictedPlayer['laneDir'],
+    turnGrace: 0,
+    alive: p.alive,
+    bombCount: p.bombCount,
+    activeBombs: p.activeBombs,
+  };
+}
+
 export interface RenderState {
   tick: number;
   grid: TileType[][];
@@ -288,8 +308,9 @@ export interface RenderState {
 
 /**
  * One match. Offline: local sim (p0) vs 3 bots on a fixed-tick accumulator.
- * Online: authoritative server state rendered with interpolation only (no
- * client-side prediction); inputs are sent as messages.
+ * Online: authoritative server state, with our own player predicted locally on
+ * the same fixed tick and reconciled against the server's input acks; remote
+ * players are still rendered with interpolation only.
  */
 export class GameScene extends Phaser.Scene {
   private mode: 'offline' | 'online' = 'offline';
@@ -314,10 +335,12 @@ export class GameScene extends Phaser.Scene {
   private grid: TileType[][] | null = null;
   private appliedDestroyed = 0;
   private appliedShrunk = 0;
-  private lastSentDirection: Direction | null = null;
-  /** Online: last-sent bomb-held flag, to resend promptly on change. */
-  private lastSentBomb = false;
-  private keepaliveMs = 0;
+  private predictor: Predictor | null = null;
+  /** Rendered-minus-predicted offset, decayed toward 0 (~100ms) to hide corrections. */
+  private predictionError = { x: 0, y: 0 };
+  private lastAcked = 0;
+  /** Slippery-tile mask for prediction; all false on non-winter maps. */
+  private iceMask: boolean[][] = [];
   /** Latest measured round-trip time (ms); null until the first pong arrives. */
   private pingMs: number | null = null;
   /** Accumulates toward the next ping send (online only). */
@@ -392,9 +415,9 @@ export class GameScene extends Phaser.Scene {
     this.gameOver = false;
     this.appliedDestroyed = 0;
     this.appliedShrunk = 0;
-    this.lastSentDirection = null;
-    this.lastSentBomb = false;
-    this.keepaliveMs = 0;
+    this.predictor = null;
+    this.predictionError = { x: 0, y: 0 };
+    this.lastAcked = 0;
     this.pingMs = null;
     this.pingTimerMs = 0;
     this.roomClosed = false;
@@ -443,6 +466,12 @@ export class GameScene extends Phaser.Scene {
       const seed = data.connection.room.state.seed;
       this.resolveMap(data.connection.room.state.mapId, seed);
       this.grid = this.compiled ? this.compiled.grid.map((row) => [...row]) : generateMap(seed);
+      // Predict our own player only. An older server has no ack field to
+      // reconcile against, so we render its state unpredicted instead.
+      const own = data.connection.room.state.players.get(this.myId);
+      if (own && typeof own.lastInputSeq === 'number') {
+        this.predictor = new Predictor(predictedFromNet(own));
+      }
       data.connection.room.state.players.forEach((p, id) =>
         this.characterByPlayer.set(id, p.character),
       );
@@ -525,6 +554,8 @@ export class GameScene extends Phaser.Scene {
     const def = getMapDef(mapId);
     this.mapId = def ? mapId : '';
     this.compiled = def ? compileMap(def, seed) : null;
+    this.iceMask =
+      this.compiled?.ice ?? Array.from({ length: GRID_HEIGHT }, () => Array<boolean>(GRID_WIDTH).fill(false));
     this.theme = def?.theme ?? 'classic';
     // TEMP DEBUG (remove): why does winter render classic?
     console.log('[MAPDBG] resolveMap', {
@@ -630,16 +661,10 @@ export class GameScene extends Phaser.Scene {
     }
     this.pingTimerMs += delta;
 
-    // Input: send on change, on bomb-held change, on a latched skill press, and
-    // periodically as keepalive. Holding Space resends `true` each keepalive so
-    // the server keeps dropping bombs as fast as its caps allow; release sends
-    // `false` promptly. A skill flag goes out on the very next send and is then
-    // cleared — the server sticky-ORs it, so a later `false` keepalive is harmless.
-    //
+    // Trigger routing stays per-frame so no key edge is lost between steps.
     // While a skill is held, Space is the skill trigger instead: it goes out as
-    // an edge-latched skill flag and never as `placeBomb`. The server's buffer
-    // clears `placeBomb` every tick, so a held Space arrives as a fresh press on
-    // each keepalive — which would empty the magazine in a fraction of a second.
+    // an edge-latched skill flag and never as `placeBomb`, so a held Space can
+    // never empty the magazine in a fraction of a second.
     this.pollSkillKeys();
     const direction = this.currentDirection();
     const armed = this.myArmedSkill();
@@ -649,16 +674,69 @@ export class GameScene extends Phaser.Scene {
     if (!this.spaceKey.isDown) this.triggerServedSkill = false;
     else if (armed !== null) this.triggerServedSkill = true;
     const bombHeld = armed === null && this.spaceKey.isDown && !this.triggerServedSkill;
-    this.keepaliveMs += delta;
-    if (
-      !this.roomClosed &&
-      (direction !== this.lastSentDirection ||
-        bombHeld !== this.lastSentBomb ||
-        this.pendingGun ||
-        this.pendingHammer ||
-        this.keepaliveMs >= KEEPALIVE_MS)
-    ) {
+
+    // One sequenced input per 20Hz step: the server applies each for exactly one
+    // tick, so held-key duration (and therefore distance) is reproduced exactly.
+    this.accumulator += delta;
+    let steps = 0;
+    while (this.accumulator >= TICK_MS && steps < MAX_STEPS_PER_FRAME) {
+      this.accumulator -= TICK_MS;
+      this.stepOnline(direction, bombHeld);
+      steps++;
+    }
+    // Fell too far behind (tab hidden, etc.): drop the backlog instead of spiraling.
+    if (this.accumulator >= TICK_MS) this.accumulator = 0;
+
+    // Reconcile: rebase onto the server's last-applied input, replay the rest.
+    const own = room.state.players.get(this.myId);
+    if (this.predictor && own && own.lastInputSeq !== this.lastAcked) {
+      const serverBombs: { col: number; row: number }[] = [];
+      room.state.bombs.forEach((b) => serverBombs.push({ col: b.col, row: b.row }));
+      const err = this.predictor.reconcile(
+        predictedFromNet(own),
+        own.lastInputSeq,
+        this.grid!,
+        this.iceMask,
+        serverBombs,
+      );
+      this.predictionError.x += err.dx;
+      this.predictionError.y += err.dy;
+      this.lastAcked = own.lastInputSeq;
+    }
+    // Corrections slide out over ~100ms instead of snapping.
+    const decay = Math.exp(-delta / PREDICTION_ERROR_SMOOTH_MS);
+    this.predictionError.x *= decay;
+    this.predictionError.y *= decay;
+
+    const state = this.renderStateFromRoom();
+    this.reconcile(state);
+    this.trackOnlineDeaths(state);
+    this.trackOnlineSkillUse(state);
+    this.updateHud(state);
+    // Our own sprite snaps: the prediction error decay is already its smoothing.
+    this.positionPlayers(state, ONLINE_LERP, new Set(this.predictor ? [this.myId] : []));
+
+    if (room.state.phase === 'finished' && !this.gameOver) {
+      this.showRanking();
+    }
+  }
+
+  /** One predicted client tick: advance the local player and send its input. */
+  private stepOnline(direction: Direction | null, bombHeld: boolean): void {
+    const room = this.connection!.room;
+    const serverBombs: { col: number; row: number }[] = [];
+    room.state.bombs.forEach((b) => serverBombs.push({ col: b.col, row: b.row }));
+
+    let seq = 0;
+    if (this.predictor) {
+      const input = this.predictor.step(direction, bombHeld, this.grid!, this.iceMask, serverBombs);
+      this.predictor.ageBombs();
+      seq = input.seq;
+    }
+    if (!this.roomClosed) {
+      // seq 0 (no predictor) lands in the server's legacy latest-wins path.
       room.send('input', {
+        seq,
         direction,
         placeBomb: bombHeld,
         fireGun: this.pendingGun,
@@ -667,20 +745,6 @@ export class GameScene extends Phaser.Scene {
       });
       this.pendingGun = false;
       this.pendingHammer = false;
-      this.lastSentDirection = direction;
-      this.lastSentBomb = bombHeld;
-      this.keepaliveMs = 0;
-    }
-
-    const state = this.renderStateFromRoom();
-    this.reconcile(state);
-    this.trackOnlineDeaths(state);
-    this.trackOnlineSkillUse(state);
-    this.updateHud(state);
-    this.positionPlayers(state, ONLINE_LERP);
-
-    if (room.state.phase === 'finished' && !this.gameOver) {
-      this.showRanking();
     }
   }
 
@@ -708,9 +772,26 @@ export class GameScene extends Phaser.Scene {
       }),
     );
     players.sort((a, b) => a.id.localeCompare(b.id));
+    // Our own player renders from the prediction (plus the decaying correction);
+    // once the server says we are dead, the ghost falls back to its coordinates.
+    if (this.predictor) {
+      const own = players.find((p) => p.id === this.myId);
+      if (own && own.alive) {
+        own.x = this.predictor.player.x + this.predictionError.x;
+        own.y = this.predictor.player.y + this.predictionError.y;
+      }
+    }
 
     const bombs: RenderState['bombs'] = [];
     s.bombs.forEach((b) => bombs.push({ id: b.id, col: b.col, row: b.row, slideInterval: b.slideInterval }));
+    if (this.predictor) {
+      for (const b of this.predictor.bombs) {
+        // Skip predicted bombs the server has since confirmed on the same tile.
+        if (!bombs.some((sb) => sb.col === b.col && sb.row === b.row)) {
+          bombs.push({ id: b.id, col: b.col, row: b.row, slideInterval: 0 });
+        }
+      }
+    }
     const explosions: RenderState['explosions'] = [];
     s.explosions.forEach((e) => explosions.push({ col: e.col, row: e.row }));
     const powerups: RenderState['powerups'] = [];
@@ -996,14 +1077,23 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** Moves player sprites; lerp=1 snaps, lower values smooth (online). */
-  private positionPlayers(state: Pick<RenderState, 'players'>, lerp: number): void {
+  /**
+   * Moves player sprites; lerp=1 snaps, lower values smooth (online). Ids in
+   * `snapIds` always snap — a predicted player is already smoothed by its
+   * error decay, so lerping it on top would only add lag.
+   */
+  private positionPlayers(
+    state: Pick<RenderState, 'players'>,
+    lerp: number,
+    snapIds?: Set<string>,
+  ): void {
     for (const player of state.players) {
       const sprite = this.playerSprites.get(player.id);
       if (!sprite) continue;
       const tx = toX(player.x);
       const ty = toY(player.y) + PLAYER_FOOT_OFFSET; // feet at cell center
-      sprite.setPosition(sprite.x + (tx - sprite.x) * lerp, sprite.y + (ty - sprite.y) * lerp);
+      const k = snapIds?.has(player.id) ? 1 : lerp;
+      sprite.setPosition(sprite.x + (tx - sprite.x) * k, sprite.y + (ty - sprite.y) * k);
       sprite.setDepth(worldDepth(player.y, WORLD_LAYER.player));
       sprite.setAlpha(player.alive ? 1 : 0.3); // dead players linger as ghosts
       // Kick active: solid cyan tint; over the last warning ticks blink to red.
@@ -1318,12 +1408,28 @@ export class GameScene extends Phaser.Scene {
   }
 
   private reconcileBombs(state: RenderState): void {
+    // Adoption first: the frame the server confirms one of our predicted bombs,
+    // the predicted id leaves the render state and the server id arrives in the
+    // same pass. Re-keying the sprite before the removal sweep below keeps the
+    // very same sprite alive — no flicker, and no second bomb-place sound.
+    for (const bomb of state.bombs) {
+      if (bomb.id <= 0 || this.bombSprites.has(bomb.id)) continue;
+      for (const [pid, pentry] of this.bombSprites) {
+        if (pid < 0 && pentry.col === bomb.col && pentry.row === bomb.row) {
+          this.bombSprites.delete(pid);
+          this.bombSprites.set(bomb.id, pentry);
+          break;
+        }
+      }
+    }
+
     const liveIds = new Set(state.bombs.map((b) => b.id));
     this.explosionCenters.clear();
     for (const [id, entry] of this.bombSprites) {
       if (!liveIds.has(id)) {
-        // A vanished bomb marks its cell as the explosion origin this pass.
-        this.explosionCenters.add(cellKey(entry.col, entry.row));
+        // A vanished server bomb marks its cell as the explosion origin this
+        // pass; predicted bombs (id < 0) vanish by adoption, not explosion.
+        if (id > 0) this.explosionCenters.add(cellKey(entry.col, entry.row));
         this.tweens.killTweensOf(entry.sprite);
         entry.sprite.destroy();
         this.bombSprites.delete(id);
@@ -1348,6 +1454,8 @@ export class GameScene extends Phaser.Scene {
         }
         continue;
       }
+      // Reached only by genuinely new bombs (an adopted one hit `existing`
+      // above), so a predicted bomb plays this once, when it first appears.
       if (this.mode === 'online') audio.bombPlace(); // offline plays via bombPlaced event
       const sprite = addImage(this, toX(bomb.col), toY(bomb.row), TEX.bomb).setDepth(
         worldDepth(bomb.row, WORLD_LAYER.bomb),
