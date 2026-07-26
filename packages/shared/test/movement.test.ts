@@ -46,6 +46,10 @@ describe('stepPlayer (extracted movement)', () => {
     const grid = boxGrid();
     const game = createGame({ seed: 1, playerIds: ['p0', 'p1'], grid });
     const sim = game.state.players[0];
+    // Spawn (0,0) sits inside boxGrid's hard border, so the sim player could
+    // never move there and the comparison would be vacuous; start both on floor.
+    sim.x = 1;
+    sim.y = 1;
     const world: MovementWorld = { grid: boxGrid(), ice: emptyIce(), bombs: [] };
     const local = freshPlayer(sim.x, sim.y);
 
