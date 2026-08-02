@@ -157,7 +157,16 @@ export class GameRoom extends Room<RoomState> {
 
     // Mid-game / post-game: the character idles (inputs null). If no humans
     // remain there is nobody left to serve — tear the room down.
-    if (this.slots.size === 0) void this.disconnect();
+    if (this.slots.size === 0) {
+      void this.disconnect();
+      return;
+    }
+
+    // Host succession must run in every phase: backToLobby is host-gated, so a
+    // departed host would otherwise deadlock the results screen for everyone.
+    if (this.state.hostId === playerId) {
+      this.state.hostId = this.slots.values().next().value!;
+    }
   }
 
   onDispose(): void {
@@ -265,7 +274,8 @@ export class GameRoom extends Room<RoomState> {
     for (const [id, ps] of [...this.state.players]) {
       if (ps.isBot || !humanIds.has(id)) this.state.players.delete(id);
     }
-    // Host may have quit mid-match; lobby succession never ran while finished.
+    // Defensive: onLeave reassigns the host in every phase, so this should
+    // never fire — but a lobby must not end up hostless.
     if (!this.state.players.has(this.state.hostId)) {
       const next = this.slots.values().next();
       this.state.hostId = next.done ? '' : next.value;

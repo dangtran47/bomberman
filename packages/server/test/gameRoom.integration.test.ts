@@ -356,6 +356,73 @@ describe('create/join/start/move flow', () => {
     }
   });
 
+  it('promotes a new host when the host disconnects on the results screen', async () => {
+    const host: AnyRoom = await new Client(wsUrl).create('game', { nickname: 'A' });
+    await until(() => host.state?.code?.length === 4, 3000, 'state ready');
+    const guest: AnyRoom = await new Client(wsUrl).joinById(host.roomId, { nickname: 'B' });
+    try {
+      await until(() => host.state.players.size === 2, 3000, 'both in');
+      host.send('toggleBots');
+      await until(() => host.state.fillBots === false, 3000, 'bots off');
+      host.send('start');
+      await until(() => guest.state.phase === 'playing', 3000, 'playing');
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const room = matchMaker.getLocalRoomById(host.roomId) as any;
+      for (const p of room.sim.state.players) {
+        if (p.id !== 'p0') {
+          p.alive = false;
+          p.deathTick = 10;
+        }
+      }
+      await until(() => guest.state.phase === 'finished', 3000, 'finished');
+
+      // Host quits on the results screen: the guest must be promoted so the
+      // room is not deadlocked on a host that will never send backToLobby.
+      await host.leave();
+      await until(() => guest.state.hostId === 'p1', 3000, 'host promoted while finished');
+
+      guest.send('backToLobby');
+      await until(() => guest.state.phase === 'lobby', 3000, 'promoted host continued to lobby');
+      expect(guest.state.players.size).toBe(1);
+    } finally {
+      await guest.leave();
+    }
+  });
+
+  it('promotes a new host when the host disconnects mid-match', async () => {
+    const host: AnyRoom = await new Client(wsUrl).create('game', { nickname: 'A' });
+    await until(() => host.state?.code?.length === 4, 3000, 'state ready');
+    const guest: AnyRoom = await new Client(wsUrl).joinById(host.roomId, { nickname: 'B' });
+    try {
+      await until(() => host.state.players.size === 2, 3000, 'both in');
+      host.send('toggleBots');
+      await until(() => host.state.fillBots === false, 3000, 'bots off');
+      host.send('start');
+      await until(() => guest.state.phase === 'playing', 3000, 'playing');
+
+      // Host rage-quits mid-match; the guest becomes host right away.
+      await host.leave();
+      await until(() => guest.state.hostId === 'p1', 3000, 'host promoted while playing');
+
+      // Their abandoned character dies; the guest wins and can continue.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const room = matchMaker.getLocalRoomById(guest.roomId) as any;
+      for (const p of room.sim.state.players) {
+        if (p.id !== 'p1') {
+          p.alive = false;
+          p.deathTick = 10;
+        }
+      }
+      await until(() => guest.state.phase === 'finished', 3000, 'finished');
+
+      guest.send('backToLobby');
+      await until(() => guest.state.phase === 'lobby', 3000, 'promoted host continued to lobby');
+    } finally {
+      await guest.leave();
+    }
+  });
+
   it('ignores backToLobby from a non-host', async () => {
     const host: AnyRoom = await new Client(wsUrl).create('game', { nickname: 'A' });
     await until(() => host.state?.code?.length === 4, 3000, 'state ready');

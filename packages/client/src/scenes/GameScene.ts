@@ -2011,48 +2011,64 @@ export class GameScene extends Phaser.Scene {
     });
 
     const controlsY = rowStartY + rows.length * rowGap + 20;
-    const isHost = room.state.hostId === this.myId;
+    const goOn = (): void => room.send('backToLobby');
 
-    // Phase-watch: once the host continues and the server flips back to lobby,
-    // return to the Lobby scene (update() early-returns while gameOver).
-    const onPhase = (): void => {
+    // The host can disconnect while the results are up, in which case the
+    // server promotes another player. Controls are rebuilt whenever the
+    // rendered role no longer matches the state, so a promoted client swaps
+    // "waiting for host…" for the Continue button instead of being stuck.
+    let controls: Phaser.GameObjects.Text | null = null;
+    let renderedHost: boolean | null = null;
+    const buildControls = (): void => {
+      const isHost = room.state.hostId === this.myId;
+      if (isHost === renderedHost) return;
+      renderedHost = isHost;
+      controls?.destroy();
+      this.input.keyboard?.off('keydown-ENTER', goOn);
+      if (isHost) {
+        const cont = this.add
+          .text(cx, controlsY, 'Continue', {
+            fontFamily: 'monospace',
+            fontSize: '28px',
+            color: '#ffe040',
+            resolution: TEXT_RES,
+          })
+          .setOrigin(0.5)
+          .setDepth(DEPTH.overlay + 1)
+          .setInteractive({ useHandCursor: true });
+        cont.on('pointerover', () => cont.setColor('#ffffff'));
+        cont.on('pointerout', () => cont.setColor('#ffe040'));
+        cont.on('pointerdown', goOn);
+        // Host-only: Enter continues. The scene's keyboard listeners are dropped
+        // on shutdown, so a resent message after leaving is not a concern.
+        this.input.keyboard?.on('keydown-ENTER', goOn);
+        controls = cont;
+      } else {
+        controls = this.add
+          .text(cx, controlsY, 'waiting for host…', {
+            fontFamily: 'monospace',
+            fontSize: '20px',
+            color: '#999999',
+            resolution: TEXT_RES,
+          })
+          .setOrigin(0.5)
+          .setDepth(DEPTH.overlay + 1);
+      }
+    };
+    buildControls();
+
+    // State-watch: rebuild the controls on host promotion, and once the host
+    // continues and the server flips back to lobby, return to the Lobby scene
+    // (update() early-returns while gameOver).
+    const onStateChange = (): void => {
+      buildControls();
       if (room.state.phase === 'lobby') {
-        room.onStateChange.remove(onPhase);
+        room.onStateChange.remove(onStateChange);
         this.scene.start('Lobby', { connection: this.connection! } satisfies LobbySceneData);
       }
     };
-    room.onStateChange(onPhase);
-    this.events.once('shutdown', () => room.onStateChange.remove(onPhase));
-
-    if (isHost) {
-      const cont = this.add
-        .text(cx, controlsY, 'Continue', {
-          fontFamily: 'monospace',
-          fontSize: '28px',
-          color: '#ffe040',
-          resolution: TEXT_RES,
-        })
-        .setOrigin(0.5)
-        .setDepth(DEPTH.overlay + 1)
-        .setInteractive({ useHandCursor: true });
-      cont.on('pointerover', () => cont.setColor('#ffffff'));
-      cont.on('pointerout', () => cont.setColor('#ffe040'));
-      const goOn = (): void => room.send('backToLobby');
-      cont.on('pointerdown', goOn);
-      // Host-only: Enter continues. The scene's keyboard listeners are dropped
-      // on shutdown, so a resent message after leaving is not a concern.
-      this.input.keyboard?.on('keydown-ENTER', goOn);
-    } else {
-      this.add
-        .text(cx, controlsY, 'waiting for host…', {
-          fontFamily: 'monospace',
-          fontSize: '20px',
-          color: '#999999',
-          resolution: TEXT_RES,
-        })
-        .setOrigin(0.5)
-        .setDepth(DEPTH.overlay + 1);
-    }
+    room.onStateChange(onStateChange);
+    this.events.once('shutdown', () => room.onStateChange.remove(onStateChange));
 
     const leave = this.add
       .text(cx, controlsY + 40, 'Leave', {
@@ -2067,7 +2083,7 @@ export class GameScene extends Phaser.Scene {
     leave.on('pointerover', () => leave.setColor('#ffffff'));
     leave.on('pointerout', () => leave.setColor('#999999'));
     leave.on('pointerdown', () => {
-      room.onStateChange.remove(onPhase);
+      room.onStateChange.remove(onStateChange);
       if (!this.roomClosed) void room.leave();
       this.scene.start('Menu');
     });
