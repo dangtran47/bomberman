@@ -4,6 +4,7 @@ export * from './rng';
 export * from './map';
 export * from './maps';
 export * from './suddenDeath';
+export * from './movement';
 export * from './game';
 export * from './ranking';
 export * from './bot';

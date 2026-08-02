@@ -24,6 +24,14 @@ export class PlayerSchema extends Schema {
   @type('string') facing = 'down';
   @type('number') wins = 0;
   @type('number') placement = 0;
+  /** Seq of this player's last input applied to a tick; clients reconcile against it. */
+  @type('number') lastInputSeq = 0;
+  /** Ice-drift heading carried across ticks ('' = none); predictor rebases from it. */
+  @type('string') momentumDir = '';
+  @type('number') momentumTicks = 0;
+  @type('number') turnTicks = 0;
+  /** Lane commitment for the corner slide ('' = none). */
+  @type('string') laneDir = '';
 }
 
 export class BombSchema extends Schema {
@@ -91,8 +99,10 @@ export function copySimToSchema(sim: GameState, out: RoomState): void {
     ps.gunAmmo = player.gunAmmo;
     ps.hammerUses = player.hammerUses;
     ps.facing = player.facing;
-    // momentumDir/momentumTicks/turnTicks/actionCooldown stay sim-only: the
-    // client renders from position and never re-simulates the drift itself.
+    ps.momentumDir = player.momentumDir ?? '';
+    ps.momentumTicks = player.momentumTicks;
+    ps.turnTicks = player.turnTicks;
+    ps.laneDir = player.laneDir ?? '';
   }
 
   const liveBombIds = new Set(sim.bombs.map((b) => String(b.id)));

@@ -7,7 +7,6 @@ import {
   SUDDEN_DEATH_START_TICKS,
   TICK_MS,
   TICK_RATE,
-  MAPS,
   TileType,
   compileMap,
   computePlacements,
@@ -27,7 +26,10 @@ import type {
 } from '@bomberman/shared';
 import { audio } from '../audio';
 import { GUN_KEY, HAMMER_KEY, SKILL_KEY_LABEL } from '../controls';
-import type { GameRoomConnection, NetRoomState } from '../net';
+import { INTERP_DELAY_MS, SnapshotBuffer } from '../interpolation';
+import type { GameRoomConnection, NetPlayer, NetRoomState } from '../net';
+import { Predictor } from '../prediction';
+import type { PredictedPlayer } from '../prediction';
 import { KICK_TINT, SPRITE_SIZE, TEX, TEXT_RES, TILE_SIZE, addImage } from '../textures';
 import type { TexRef } from '../textures';
 import { buildSkillsTable } from '../skillsTable';
@@ -55,12 +57,19 @@ const HUMAN_ID = 'p0';
 const PLAYER_IDS = ['p0', 'p1', 'p2', 'p3'];
 /** Max sim steps per frame; if further behind, the backlog is dropped. */
 const MAX_STEPS_PER_FRAME = 5;
-/** Exponential smoothing factor for online sprite positions (per frame). */
-const ONLINE_LERP = 0.35;
-/** Online: resend the current input this often even without changes. */
-const KEEPALIVE_MS = 100;
+/** Time constant (ms) for bleeding off prediction corrections. */
+const PREDICTION_ERROR_SMOOTH_MS = 100;
+/** Correction size (tiles) past which a visible glide reads worse than a snap. */
+const PREDICTION_ERROR_SNAP_TILES = 1.5;
 /** Online: measure round-trip time by echoing a ping this often. */
 const PING_INTERVAL_MS = 2000;
+/**
+ * Online: how long an optimistically collected powerup stays hidden while we
+ * wait for the server to confirm it. Confirmation normally lands within
+ * ~RTT + one tick, so a full second means something went wrong (the server saw
+ * us somewhere else, or blocked) — give up and put the sprite back.
+ */
+const PICKUP_ROLLBACK_MS = 1000;
 
 /** Inset (px per side) of a winter block sprite inside its tile, so the floor
  * shows through as a gap and the block reads as a raised object. */
@@ -123,6 +132,13 @@ function worldDepth(row: number, layer: number): number {
  * center (too high/floaty); the shadow tracks this same offset.
  */
 const PLAYER_FOOT_OFFSET = 12;
+/** Walking bob: vertical sine amplitude (px) and frequency (Hz). Visual only. */
+const WALK_BOB_PX = 1.5;
+const WALK_BOB_HZ = 8;
+/** Position delta (tiles/frame) below which a player counts as standing still. */
+const WALK_EPSILON = 0.002;
+/** Keep bobbing this long after the last position change: sim positions only move on 20Hz ticks. */
+const WALK_HOLD_MS = 120;
 /** Bomb pulse tween grows the sprite to this multiple of its base scale. */
 const BOMB_PULSE = 1.15;
 /** Max random tilt (radians) applied to each explosion pom, visual only. */
@@ -160,10 +176,8 @@ const HAMMER_TARGET = {
 } as const;
 /**
  * Foot shadow: a soft dark ellipse anchored under the local player's rendered
- * sprite, tracking the same lerp-smoothed position the sprite uses. Anchoring to
- * the sprite (not the logical cell center) keeps the shadow glued to the feet
- * online — anchoring to toX/toY of player.x/y snaps to the logical target while
- * the sprite lerps behind, making the shadow look like it runs ahead.
+ * sprite. Anchoring to the sprite (not the logical cell center) keeps the
+ * shadow glued to the feet wherever the sprite is actually drawn.
  */
 const FOOT_SHADOW = {
   color: 0x000000,
@@ -277,6 +291,24 @@ interface SkillBadge {
   count: Phaser.GameObjects.Text | null;
 }
 
+/** Rebase snapshot of our own synced player, '' mapped back to null. */
+function predictedFromNet(p: NetPlayer): PredictedPlayer {
+  return {
+    x: p.x,
+    y: p.y,
+    speed: p.speed,
+    kickTicks: p.kickTicks,
+    momentumDir: (p.momentumDir || null) as PredictedPlayer['momentumDir'],
+    momentumTicks: p.momentumTicks,
+    turnTicks: p.turnTicks,
+    laneDir: (p.laneDir || null) as PredictedPlayer['laneDir'],
+    turnGrace: 0,
+    alive: p.alive,
+    bombCount: p.bombCount,
+    activeBombs: p.activeBombs,
+  };
+}
+
 export interface RenderState {
   tick: number;
   grid: TileType[][];
@@ -288,8 +320,9 @@ export interface RenderState {
 
 /**
  * One match. Offline: local sim (p0) vs 3 bots on a fixed-tick accumulator.
- * Online: authoritative server state rendered with interpolation only (no
- * client-side prediction); inputs are sent as messages.
+ * Online: authoritative server state, with our own player predicted locally on
+ * the same fixed tick and reconciled against the server's input acks; remote
+ * players are rendered from the snapshot buffer, INTERP_DELAY_MS in the past.
  */
 export class GameScene extends Phaser.Scene {
   private mode: 'offline' | 'online' = 'offline';
@@ -314,10 +347,14 @@ export class GameScene extends Phaser.Scene {
   private grid: TileType[][] | null = null;
   private appliedDestroyed = 0;
   private appliedShrunk = 0;
-  private lastSentDirection: Direction | null = null;
-  /** Online: last-sent bomb-held flag, to resend promptly on change. */
-  private lastSentBomb = false;
-  private keepaliveMs = 0;
+  private predictor: Predictor | null = null;
+  /** Time-stamped remote positions; sampled INTERP_DELAY_MS in the past. */
+  private snapshots = new SnapshotBuffer();
+  /** Rendered-minus-predicted offset, decayed toward 0 (~100ms) to hide corrections. */
+  private predictionError = { x: 0, y: 0 };
+  private lastAcked = 0;
+  /** Slippery-tile mask for prediction; all false on non-winter maps. */
+  private iceMask: boolean[][] = [];
   /** Latest measured round-trip time (ms); null until the first pong arrives. */
   private pingMs: number | null = null;
   /** Accumulates toward the next ping send (online only). */
@@ -353,6 +390,16 @@ export class GameScene extends Phaser.Scene {
   private triggerServedSkill = false;
 
   private playerSprites = new Map<string, Phaser.GameObjects.Image>();
+  /** Per-player walking-bob state: sine phase, last-seen position, bob hold left (ms). */
+  private walkAnim = new Map<string, { phase: number; lastX: number; lastY: number; holdMs: number }>();
+  /**
+   * Position each tick-quantized player held *before* the last executed sim step.
+   * Rendering blends it with the current position by the leftover-accumulator
+   * fraction, so 20Hz sim positions come out as 60fps motion. Populated for every
+   * player offline, and for our own predicted player only online — remote players
+   * are already smoothed by the snapshot buffer.
+   */
+  private prevTickPos = new Map<string, { x: number; y: number }>();
   /** Start-of-match arrow over the local player; null once it has faded out. */
   private myPointer: Phaser.GameObjects.Triangle | null = null;
   /** Hover offset for the arrow, tweened separately so it can also follow. */
@@ -374,6 +421,12 @@ export class GameScene extends Phaser.Scene {
   private powerupSprites = new Map<string, { sprite: Phaser.GameObjects.Image; ref: TexRef }>();
   /** Cells whose bomb vanished this reconcile pass — the explosion's origin. */
   private explosionCenters = new Set<string>();
+  /**
+   * Online: cells whose powerup we hid the moment our predicted body stepped
+   * onto it, mapped to the deadline past which we stop waiting for the server
+   * and unhide. Sprite + sound only; every stat stays server-authoritative.
+   */
+  private pendingPickups = new Map<string, number>();
 
   private hudText!: Phaser.GameObjects.Text;
   private suddenDeathText!: Phaser.GameObjects.Text;
@@ -392,9 +445,10 @@ export class GameScene extends Phaser.Scene {
     this.gameOver = false;
     this.appliedDestroyed = 0;
     this.appliedShrunk = 0;
-    this.lastSentDirection = null;
-    this.lastSentBomb = false;
-    this.keepaliveMs = 0;
+    this.predictor = null;
+    this.snapshots = new SnapshotBuffer();
+    this.predictionError = { x: 0, y: 0 };
+    this.lastAcked = 0;
     this.pingMs = null;
     this.pingTimerMs = 0;
     this.roomClosed = false;
@@ -407,6 +461,8 @@ export class GameScene extends Phaser.Scene {
     this.prevGunAmmo.clear();
     this.prevHammerUses.clear();
     this.playerSprites.clear();
+    this.walkAnim.clear();
+    this.prevTickPos.clear();
     this.myPointer = null;
     this.myPointerBob.y = 0;
     this.hammerTarget = null;
@@ -418,6 +474,7 @@ export class GameScene extends Phaser.Scene {
     this.explosionSprites.clear();
     this.powerupSprites.clear();
     this.explosionCenters.clear();
+    this.pendingPickups.clear();
     this.characterByPlayer.clear();
     this.skillsPanel = [];
     this.skillsShown = false;
@@ -443,11 +500,30 @@ export class GameScene extends Phaser.Scene {
       const seed = data.connection.room.state.seed;
       this.resolveMap(data.connection.room.state.mapId, seed);
       this.grid = this.compiled ? this.compiled.grid.map((row) => [...row]) : generateMap(seed);
+      // Predict our own player only. An older server has no ack field to
+      // reconcile against, so we render its state unpredicted instead.
+      const own = data.connection.room.state.players.get(this.myId);
+      if (own && typeof own.lastInputSeq === 'number') {
+        this.predictor = new Predictor(predictedFromNet(own));
+      }
       data.connection.room.state.players.forEach((p, id) =>
         this.characterByPlayer.set(id, p.character),
       );
+      // Every patch is a snapshot of where the server says everyone is;
+      // rendering samples this history INTERP_DELAY_MS in the past. Our own
+      // player is recorded too: it is unused while predicted, but against an
+      // old server (no acks, no predictor) it is what smooths our own sprite.
+      const onPatch = (): void => {
+        const positions = new Map<string, { x: number; y: number }>();
+        data.connection.room.state.players.forEach((p, id) => {
+          positions.set(id, { x: p.x, y: p.y });
+        });
+        this.snapshots.push(performance.now(), positions);
+      };
+      data.connection.room.onStateChange(onPatch);
       data.connection.room.onLeave(this.onRoomLeave);
       this.events.once('shutdown', () => {
+        data.connection.room.onStateChange.remove(onPatch);
         data.connection.room.onLeave.remove(this.onRoomLeave);
       });
       data.connection.room.onMessage('pong', (t: number) => {
@@ -462,7 +538,7 @@ export class GameScene extends Phaser.Scene {
     this.createHud();
     this.reconcile(initial);
     this.updateHud(initial);
-    this.positionPlayers(initial, 1);
+    this.positionPlayers(initial, 1, 0);
     this.showMyPointer();
   }
 
@@ -525,19 +601,9 @@ export class GameScene extends Phaser.Scene {
     const def = getMapDef(mapId);
     this.mapId = def ? mapId : '';
     this.compiled = def ? compileMap(def, seed) : null;
+    this.iceMask =
+      this.compiled?.ice ?? Array.from({ length: GRID_HEIGHT }, () => Array<boolean>(GRID_WIDTH).fill(false));
     this.theme = def?.theme ?? 'classic';
-    // TEMP DEBUG (remove): why does winter render classic?
-    console.log('[MAPDBG] resolveMap', {
-      requested: mapId,
-      resolved: this.mapId,
-      theme: this.theme,
-      compiled: this.compiled !== null,
-      floorFrame: this.floorRef(1, 1),
-      winterFloorFrame: this.textures.exists('gameplay6')
-        ? this.textures.get('gameplay6').has('winter_floor')
-        : 'page-missing',
-      registryKeys: Object.keys(MAPS),
-    });
   }
 
   update(_time: number, delta: number): void {
@@ -554,13 +620,18 @@ export class GameScene extends Phaser.Scene {
     let steps = 0;
     while (this.accumulator >= TICK_MS && steps < MAX_STEPS_PER_FRAME) {
       this.accumulator -= TICK_MS;
+      // Snapshot before every step, so after the loop this holds the state the
+      // LAST executed step started from — the near end of the render blend.
+      for (const p of this.sim!.state.players) this.prevTickPos.set(p.id, { x: p.x, y: p.y });
       this.stepSim();
       steps++;
     }
     // Fell too far behind (tab hidden, etc.): drop the backlog instead of spiraling.
     if (this.accumulator >= TICK_MS) this.accumulator = 0;
 
-    this.positionPlayers(this.sim!.state, 1);
+    // Leftover time since the last tick, as a fraction of one tick.
+    const alpha = Math.min(1, this.accumulator / TICK_MS);
+    this.positionPlayers(this.sim!.state, 1, delta, alpha);
   }
 
   private stepSim(): void {
@@ -630,16 +701,10 @@ export class GameScene extends Phaser.Scene {
     }
     this.pingTimerMs += delta;
 
-    // Input: send on change, on bomb-held change, on a latched skill press, and
-    // periodically as keepalive. Holding Space resends `true` each keepalive so
-    // the server keeps dropping bombs as fast as its caps allow; release sends
-    // `false` promptly. A skill flag goes out on the very next send and is then
-    // cleared — the server sticky-ORs it, so a later `false` keepalive is harmless.
-    //
+    // Trigger routing stays per-frame so no key edge is lost between steps.
     // While a skill is held, Space is the skill trigger instead: it goes out as
-    // an edge-latched skill flag and never as `placeBomb`. The server's buffer
-    // clears `placeBomb` every tick, so a held Space arrives as a fresh press on
-    // each keepalive — which would empty the magazine in a fraction of a second.
+    // an edge-latched skill flag and never as `placeBomb`, so a held Space can
+    // never empty the magazine in a fraction of a second.
     this.pollSkillKeys();
     const direction = this.currentDirection();
     const armed = this.myArmedSkill();
@@ -649,16 +714,104 @@ export class GameScene extends Phaser.Scene {
     if (!this.spaceKey.isDown) this.triggerServedSkill = false;
     else if (armed !== null) this.triggerServedSkill = true;
     const bombHeld = armed === null && this.spaceKey.isDown && !this.triggerServedSkill;
-    this.keepaliveMs += delta;
-    if (
-      !this.roomClosed &&
-      (direction !== this.lastSentDirection ||
-        bombHeld !== this.lastSentBomb ||
-        this.pendingGun ||
-        this.pendingHammer ||
-        this.keepaliveMs >= KEEPALIVE_MS)
-    ) {
+
+    // One sequenced input per 20Hz step: the server applies each for exactly one
+    // tick, so held-key duration (and therefore distance) is reproduced exactly.
+    this.accumulator += delta;
+    let steps = 0;
+    while (this.accumulator >= TICK_MS && steps < MAX_STEPS_PER_FRAME) {
+      this.accumulator -= TICK_MS;
+      this.stepOnline(direction, bombHeld);
+      steps++;
+    }
+    // Fell too far behind (tab hidden, etc.): drop the backlog instead of spiraling.
+    if (this.accumulator >= TICK_MS) this.accumulator = 0;
+
+    // Grid deltas land before the replay below, not after it in renderStateFromRoom:
+    // an ack that arrives together with a block destruction must replay against the
+    // opened tile, or the replay walks into a wall the server already removed. Both
+    // are index-tracked and idempotent, so the later call is a no-op.
+    this.applyDestroyedBlocks(room.state);
+    this.applyArenaShrunk(room.state);
+
+    // Reconcile: rebase onto the server's last-applied input, replay the rest.
+    const own = room.state.players.get(this.myId);
+    if (this.predictor && own && own.lastInputSeq !== this.lastAcked) {
+      const serverBombs: { col: number; row: number }[] = [];
+      room.state.bombs.forEach((b) => serverBombs.push({ col: b.col, row: b.row }));
+      const err = this.predictor.reconcile(
+        predictedFromNet(own),
+        own.lastInputSeq,
+        this.grid!,
+        this.iceMask,
+        serverBombs,
+      );
+      this.predictionError.x += err.dx;
+      this.predictionError.y += err.dy;
+      // The rebase moved the predicted position by -err; shift the render blend's
+      // near end by the same amount so it stays on the new basis. Without this the
+      // correction the error term is hiding leaks back in as an alpha-scaled jump.
+      const prev = this.prevTickPos.get(this.myId);
+      if (prev) {
+        prev.x -= err.dx;
+        prev.y -= err.dy;
+      }
+      // Past the threshold (a resumed stall, say) glide across the arena would be
+      // worse than the single-frame jump, so drop the correction and snap.
+      if (Math.hypot(this.predictionError.x, this.predictionError.y) > PREDICTION_ERROR_SNAP_TILES) {
+        this.predictionError.x = 0;
+        this.predictionError.y = 0;
+      }
+      this.lastAcked = own.lastInputSeq;
+    }
+    // Corrections slide out over ~100ms instead of snapping.
+    const decay = Math.exp(-delta / PREDICTION_ERROR_SMOOTH_MS);
+    this.predictionError.x *= decay;
+    this.predictionError.y *= decay;
+
+    // Claim the powerup under our predicted feet before the server gets to it,
+    // so the sprite and the sound land on the frame we walk in rather than a
+    // round trip later. renderStateFromRoom then hides it for us.
+    this.trackOptimisticPickup();
+
+    const state = this.renderStateFromRoom();
+    this.reconcile(state);
+    // Retiring pending entries has to come after reconcile: the pass that sees
+    // the server's own removal still needs the entry to know it already played
+    // that pickup sound optimistically.
+    this.sweepPendingPickups();
+    this.trackOnlineDeaths(state);
+    this.trackOnlineSkillUse(state);
+    this.updateHud(state);
+    // Everything snaps, because every target is already smooth: our own predicted
+    // player by the sub-tick blend below (plus its prediction error decay),
+    // everyone else by the interpolation buffer.
+    const alpha = Math.min(1, this.accumulator / TICK_MS);
+    this.positionPlayers(state, 1, delta, alpha);
+
+    if (room.state.phase === 'finished' && !this.gameOver) {
+      this.showRanking();
+    }
+  }
+
+  /** One predicted client tick: advance the local player and send its input. */
+  private stepOnline(direction: Direction | null, bombHeld: boolean): void {
+    const room = this.connection!.room;
+    const serverBombs: { col: number; row: number }[] = [];
+    room.state.bombs.forEach((b) => serverBombs.push({ col: b.col, row: b.row }));
+
+    let seq = 0;
+    if (this.predictor) {
+      // Near end of the render blend: where we were before this step ran.
+      this.prevTickPos.set(this.myId, { x: this.predictor.player.x, y: this.predictor.player.y });
+      const input = this.predictor.step(direction, bombHeld, this.grid!, this.iceMask, serverBombs);
+      this.predictor.ageBombs();
+      seq = input.seq;
+    }
+    if (!this.roomClosed) {
+      // seq 0 (no predictor) lands in the server's legacy latest-wins path.
       room.send('input', {
+        seq,
         direction,
         placeBomb: bombHeld,
         fireGun: this.pendingGun,
@@ -667,20 +820,59 @@ export class GameScene extends Phaser.Scene {
       });
       this.pendingGun = false;
       this.pendingHammer = false;
-      this.lastSentDirection = direction;
-      this.lastSentBomb = bombHeld;
-      this.keepaliveMs = 0;
     }
+  }
 
-    const state = this.renderStateFromRoom();
-    this.reconcile(state);
-    this.trackOnlineDeaths(state);
-    this.trackOnlineSkillUse(state);
-    this.updateHud(state);
-    this.positionPlayers(state, ONLINE_LERP);
+  /**
+   * Optimistic pickup: our own body is predicted, so it reaches a powerup about
+   * a round trip before the server's collection shows up in the synced state,
+   * and the item sits visibly under our feet in the meantime. Standing on one
+   * therefore hides it and plays the sound right away, and the cell is
+   * remembered so the sprite can come back if the server disagrees. Purely
+   * cosmetic — speed/bombs/blast still only move when the server says so.
+   */
+  private trackOptimisticPickup(): void {
+    const predictor = this.predictor;
+    if (!predictor || !predictor.player.alive) return;
+    const s: NetRoomState = this.connection!.room.state;
+    if (s.powerups.length === 0) return;
 
-    if (room.state.phase === 'finished' && !this.gameOver) {
-      this.showRanking();
+    const col = Math.round(predictor.player.x);
+    const row = Math.round(predictor.player.y);
+    const key = cellKey(col, row);
+    if (this.pendingPickups.has(key)) return;
+
+    let here = false;
+    s.powerups.forEach((p) => {
+      if (p.col === col && p.row === row) here = true;
+    });
+    if (!here) return;
+    // Mirrors the sim: nothing is collected under an explosion, so claiming a
+    // powerup on a burning cell would always be rolled back (and we are dying).
+    let burning = false;
+    s.explosions.forEach((e) => {
+      if (e.col === col && e.row === row) burning = true;
+    });
+    if (burning) return;
+
+    this.pendingPickups.set(key, performance.now() + PICKUP_ROLLBACK_MS);
+    audio.powerup();
+  }
+
+  /**
+   * Retires pending pickups. A cell the server no longer lists a powerup on is
+   * confirmed (or the item burned) — the sprite is already gone and the sound
+   * already played, so just drop the entry. A cell past its deadline is a
+   * refusal: dropping it makes renderStateFromRoom surface the powerup again on
+   * the next frame, and reconcilePowerups rebuilds the sprite.
+   */
+  private sweepPendingPickups(): void {
+    if (this.pendingPickups.size === 0) return;
+    const live = new Set<string>();
+    this.connection!.room.state.powerups.forEach((p) => live.add(cellKey(p.col, p.row)));
+    const now = performance.now();
+    for (const [key, expiry] of this.pendingPickups) {
+      if (!live.has(key) || now >= expiry) this.pendingPickups.delete(key);
     }
   }
 
@@ -708,13 +900,51 @@ export class GameScene extends Phaser.Scene {
       }),
     );
     players.sort((a, b) => a.id.localeCompare(b.id));
+    // Our own player renders from the raw prediction; positionPlayers blends it
+    // across the sub-tick and adds the decaying correction on top of that blend.
+    // Once the server says we are dead, the ghost falls back to its coordinates —
+    // and the blend's near end goes with it, since it is on the other basis.
+    if (this.predictor) {
+      const own = players.find((p) => p.id === this.myId);
+      if (own && own.alive) {
+        own.x = this.predictor.player.x;
+        own.y = this.predictor.player.y;
+      } else {
+        this.prevTickPos.delete(this.myId);
+      }
+    }
+    // Remote players render slightly in the past, interpolated between the two
+    // snapshots bracketing that time. Positions only — every other field stays
+    // at the server's latest value.
+    const renderT = performance.now() - INTERP_DELAY_MS;
+    for (const p of players) {
+      if (p.id === this.myId && this.predictor) continue;
+      const s = this.snapshots.sample(p.id, renderT);
+      if (s) {
+        p.x = s.x;
+        p.y = s.y;
+      }
+    }
 
     const bombs: RenderState['bombs'] = [];
     s.bombs.forEach((b) => bombs.push({ id: b.id, col: b.col, row: b.row, slideInterval: b.slideInterval }));
+    if (this.predictor) {
+      for (const b of this.predictor.bombs) {
+        // Skip predicted bombs the server has since confirmed on the same tile.
+        if (!bombs.some((sb) => sb.col === b.col && sb.row === b.row)) {
+          bombs.push({ id: b.id, col: b.col, row: b.row, slideInterval: 0 });
+        }
+      }
+    }
     const explosions: RenderState['explosions'] = [];
     s.explosions.forEach((e) => explosions.push({ col: e.col, row: e.row }));
     const powerups: RenderState['powerups'] = [];
-    s.powerups.forEach((p) => powerups.push({ col: p.col, row: p.row, type: p.type }));
+    // Powerups we already claimed optimistically are reported as gone, which is
+    // what makes their sprite vanish the instant we step on them.
+    s.powerups.forEach((p) => {
+      if (this.pendingPickups.has(cellKey(p.col, p.row))) return;
+      powerups.push({ col: p.col, row: p.row, type: p.type });
+    });
 
     return { tick: s.tick, grid: this.grid!, players, bombs, explosions, powerups };
   }
@@ -996,15 +1226,58 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** Moves player sprites; lerp=1 snaps, lower values smooth (online). */
-  private positionPlayers(state: Pick<RenderState, 'players'>, lerp: number): void {
+  /**
+   * Moves player sprites; lerp=1 snaps, lower values smooth toward the target.
+   * `alpha` is the sub-tick fraction used to blend tick-quantized players (those
+   * with a `prevTickPos` entry) between their previous and current tick position,
+   * so a 20Hz sim renders as continuous 60fps motion. Visual only: nothing here
+   * writes back into any state the sim, predictor or network reads.
+   */
+  private positionPlayers(
+    state: Pick<RenderState, 'players'>,
+    lerp: number,
+    delta: number,
+    alpha = 1,
+  ): void {
     for (const player of state.players) {
       const sprite = this.playerSprites.get(player.id);
       if (!sprite) continue;
-      const tx = toX(player.x);
-      const ty = toY(player.y) + PLAYER_FOOT_OFFSET; // feet at cell center
-      sprite.setPosition(sprite.x + (tx - sprite.x) * lerp, sprite.y + (ty - sprite.y) * lerp);
-      sprite.setDepth(worldDepth(player.y, WORLD_LAYER.player));
+
+      let rx = player.x;
+      let ry = player.y;
+      const prev = this.prevTickPos.get(player.id);
+      if (prev) {
+        rx = prev.x + (player.x - prev.x) * alpha;
+        ry = prev.y + (player.y - prev.y) * alpha;
+        // Online own player: the render state carries the bare prediction, so the
+        // decaying correction rides on top of the blend (tile units, pre-toX()).
+        if (this.predictor && player.id === this.myId) {
+          rx += this.predictionError.x;
+          ry += this.predictionError.y;
+        }
+      }
+      const tx = toX(rx);
+      const ty = toY(ry) + PLAYER_FOOT_OFFSET; // feet at cell center
+
+      let anim = this.walkAnim.get(player.id);
+      if (!anim) {
+        anim = { phase: 0, lastX: player.x, lastY: player.y, holdMs: 0 };
+        this.walkAnim.set(player.id, anim);
+      }
+      // Movement is judged on the tick position, which only changes every 50ms,
+      // so a single moving step holds the bob alive over the frames in between.
+      const stepped =
+        Math.abs(player.x - anim.lastX) > WALK_EPSILON ||
+        Math.abs(player.y - anim.lastY) > WALK_EPSILON;
+      anim.lastX = player.x;
+      anim.lastY = player.y;
+      anim.holdMs = stepped ? WALK_HOLD_MS : Math.max(0, anim.holdMs - delta);
+      const moving = player.alive && anim.holdMs > 0;
+      anim.phase = moving ? anim.phase + (delta / 1000) * WALK_BOB_HZ * Math.PI * 2 : 0;
+      const bob = moving ? Math.abs(Math.sin(anim.phase)) * -WALK_BOB_PX : 0;
+
+      sprite.setPosition(sprite.x + (tx - sprite.x) * lerp, sprite.y + (ty + bob - sprite.y) * lerp);
+      sprite.setDepth(worldDepth(ry, WORLD_LAYER.player));
       sprite.setAlpha(player.alive ? 1 : 0.3); // dead players linger as ghosts
       // Kick active: solid cyan tint; over the last warning ticks blink to red.
       const warning = player.kickTicks > 0 && player.kickTicks <= KICK_WARNING_TICKS;
@@ -1049,9 +1322,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Moves the foot shadow under the local player's rendered sprite, tracking the
-   * same lerp-smoothed position the sprite uses so the shadow stays glued to the
-   * feet instead of snapping ahead to the logical cell. Hidden once dead.
+   * Moves the foot shadow under the local player's rendered sprite, so it stays
+   * glued to the feet instead of snapping to the logical cell. Hidden once dead.
    */
   private updateMyFootShadow(me: RenderPlayer, sprite: Phaser.GameObjects.Image): void {
     if (!me.alive) {
@@ -1318,12 +1590,28 @@ export class GameScene extends Phaser.Scene {
   }
 
   private reconcileBombs(state: RenderState): void {
+    // Adoption first: the frame the server confirms one of our predicted bombs,
+    // the predicted id leaves the render state and the server id arrives in the
+    // same pass. Re-keying the sprite before the removal sweep below keeps the
+    // very same sprite alive — no flicker, and no second bomb-place sound.
+    for (const bomb of state.bombs) {
+      if (bomb.id <= 0 || this.bombSprites.has(bomb.id)) continue;
+      for (const [pid, pentry] of this.bombSprites) {
+        if (pid < 0 && pentry.col === bomb.col && pentry.row === bomb.row) {
+          this.bombSprites.delete(pid);
+          this.bombSprites.set(bomb.id, pentry);
+          break;
+        }
+      }
+    }
+
     const liveIds = new Set(state.bombs.map((b) => b.id));
     this.explosionCenters.clear();
     for (const [id, entry] of this.bombSprites) {
       if (!liveIds.has(id)) {
-        // A vanished bomb marks its cell as the explosion origin this pass.
-        this.explosionCenters.add(cellKey(entry.col, entry.row));
+        // A vanished server bomb marks its cell as the explosion origin this
+        // pass; predicted bombs (id < 0) vanish by adoption, not explosion.
+        if (id > 0) this.explosionCenters.add(cellKey(entry.col, entry.row));
         this.tweens.killTweensOf(entry.sprite);
         entry.sprite.destroy();
         this.bombSprites.delete(id);
@@ -1348,6 +1636,8 @@ export class GameScene extends Phaser.Scene {
         }
         continue;
       }
+      // Reached only by genuinely new bombs (an adopted one hit `existing`
+      // above), so a predicted bomb plays this once, when it first appears.
       if (this.mode === 'online') audio.bombPlace(); // offline plays via bombPlaced event
       const sprite = addImage(this, toX(bomb.col), toY(bomb.row), TEX.bomb).setDepth(
         worldDepth(bomb.row, WORLD_LAYER.bomb),
@@ -1403,7 +1693,9 @@ export class GameScene extends Phaser.Scene {
           const collected = state.players.some(
             (p) => p.alive && Math.round(p.x) === col && Math.round(p.y) === row,
           );
-          if (collected) audio.powerup();
+          // ...unless we claimed this cell optimistically, in which case the
+          // sound already played on the frame we stepped onto it.
+          if (collected && !this.pendingPickups.has(key)) audio.powerup();
         }
         this.tweens.killTweensOf(entry.sprite);
         entry.sprite.destroy();

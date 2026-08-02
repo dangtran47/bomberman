@@ -25,6 +25,9 @@ Fly's upstream transit is not under our control.
 
 ### Perceived input→see-it delay (own move, no prediction) ≈ 180ms
 
+(as of investigation; superseded by #2/#3 below — own-move feel no longer pays
+uplink/tick/lerp)
+
 ```
 input sample (render frame)   ~16ms
 uplink (ping/2)                25ms
@@ -42,7 +45,7 @@ TOTAL PERCEIVED              ~180ms
 - Sim tick: 20Hz / 50ms — `TICK_RATE`, `packages/shared/src/constants.ts:4-5`; loop `GameRoom.ts:208`
 - Patch/broadcast: Colyseus default 20Hz (no `setPatchRate` override)
 - Input send: event-driven + 100ms keepalive, throttled to render frame — `GameScene.ts:61,652-667`
-- Remote interp: exp lerp `ONLINE_LERP=0.35` — `GameScene.ts:59`, applied `:680`. No client prediction (`GameScene.ts:291`)
+- Remote interp: exp lerp `ONLINE_LERP=0.35` — `GameScene.ts:59`, applied `:680`. No client prediction (`GameScene.ts:291`) (as of investigation; superseded, see #2/#3 below)
 - Lag comp: ping-scaled turn-grace snap-back — `shared/src/game.ts:232-233,491-514`; caps `GRACE_CAP=0.45`, `PING_CAP_MS=400`
 - Host: `packages/server/fly.toml` — `primary_region='sin'`, `size='shared-cpu-1x'`, 256MB
 
@@ -54,16 +57,22 @@ Node sockets default `noDelay=false` → Nagle can hold small 20Hz game packets 
 `httpServer.on('connection', (socket) => socket.setNoDelay(true))` (covers all WS
 upgrades). Mostly cuts jitter spikes, not baseline ping. Needs deploy to take effect.
 
-### 🔴 2. Client-side prediction + reconciliation — biggest feel win
-Apply own-player input locally immediately, server reconciles. Removes uplink + tick +
-downlink (~75ms) from own-move feel → own movement feels ~0ms regardless of ping.
+### ✅ 2. Client-side prediction + reconciliation — biggest feel win — DONE
+Built via `docs/superpowers/plans/2026-07-26-netcode-prediction-v2.md` (this branch).
+Actual shape: a per-tick sequenced input queue (server applies exactly one input per
+tick, which also fixes hold-duration→distance determinism), a client predictor that
+rebases and replays unacked input on each server snapshot, and a `lastInputSeq` ack so
+own-player movement renders locally with ~0ms feel regardless of ping.
 Spec: `docs/superpowers/specs/2026-07-25-client-prediction-design.md`
-Plan: `docs/superpowers/plans/2026-07-25-client-prediction.md`
+Superseded plan: `docs/superpowers/plans/2026-07-25-client-prediction.md`
 
-### 🟡 3. Snapshot interpolation for remote players
-Replace exp lerp (`ONLINE_LERP=0.35`, ~100ms convergence tail) with time-based
-snapshot interpolation: buffer 2 snapshots, lerp between by timestamp. Bounds remote
-delay to ~1 tick (50ms) and is smoother. Quick partial: raise lerp toward 0.5.
+### ✅ 3. Snapshot interpolation for remote players — DONE
+Built via `docs/superpowers/plans/2026-07-26-netcode-prediction-v2.md` (this branch).
+Replaced the exp lerp (`ONLINE_LERP=0.35`, ~100ms convergence tail) with a time-based
+100ms snapshot buffer, lerping remote players between two buffered snapshots by
+timestamp. Remotes render ~100ms (~2 ticks) in the past, interpolating between
+bracketing snapshots — a fixed, smooth delay instead of the old exp lerp's variable
+settle tail.
 
 ### 🟡 4. Raise tick + patch rate 20→30Hz — BLOCKED on dedicated CPU
 30Hz halves the tick-wait window (25→17ms avg). BUT `shared-cpu-1x` can't sustain
@@ -81,9 +90,16 @@ don't regress).
 ## Do-order
 
 1. ✅ setNoDelay — done, deploy.
-2. Client prediction (#2) — biggest win, already spec'd.
-3. Snapshot interpolation (#3).
+2. ✅ Client prediction (#2) — done, see above.
+3. ✅ Snapshot interpolation (#3) — done, see above.
 4. Dedicated CPU + 30Hz (#4).
 5. Optional: alt-host routing test (#5).
 
 Network baseline (~50ms) is near floor — do not chase it.
+
+## turnGrace note
+
+The ping-scaled turn-grace snap-back (`shared/src/game.ts:232-233,491-514`) is now
+inert on the online path: the sequenced-input queue carries no `pingMs`, and
+tick-exact input replay (per #2 above) supersedes what turn-grace was compensating
+for. It's dead code online at this point and can be deleted in a future cleanup.

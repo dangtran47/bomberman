@@ -68,6 +68,40 @@ describe('copySimToSchema', () => {
     expect(state.players.get('p0')!.kickTicks).toBe(7);
   });
 
+  it('mirrors the ice/lane movement fields so clients can replay from them', () => {
+    const game = createGame({ seed: 42, playerIds: ['p0', 'p1'] });
+    const state = makeRoomState(['p0', 'p1']);
+    game.state.players[0].momentumDir = 'right';
+    game.state.players[0].momentumTicks = 5;
+    game.state.players[0].turnTicks = 2;
+    game.state.players[0].laneDir = 'up';
+    copySimToSchema(game.state, state);
+    const p0 = state.players.get('p0')!;
+    expect(p0.momentumDir).toBe('right');
+    expect(p0.momentumTicks).toBe(5);
+    expect(p0.turnTicks).toBe(2);
+    expect(p0.laneDir).toBe('up');
+  });
+
+  it('maps a null momentumDir/laneDir to the empty string', () => {
+    const game = createGame({ seed: 42, playerIds: ['p0', 'p1'] });
+    const state = makeRoomState(['p0', 'p1']);
+    game.state.players[0].momentumDir = null;
+    game.state.players[0].laneDir = null;
+    copySimToSchema(game.state, state);
+    const p0 = state.players.get('p0')!;
+    expect(p0.momentumDir).toBe('');
+    expect(p0.laneDir).toBe('');
+  });
+
+  it('defaults a fresh PlayerSchema to no momentum and no lane', () => {
+    const p = new PlayerSchema();
+    expect(p.momentumDir).toBe('');
+    expect(p.momentumTicks).toBe(0);
+    expect(p.turnTicks).toBe(0);
+    expect(p.laneDir).toBe('');
+  });
+
   it('updates bomb col/row when a sliding bomb moves', () => {
     const game = createGame({ seed: 42, playerIds: ['p0', 'p1'] });
     const state = makeRoomState(['p0', 'p1']);
