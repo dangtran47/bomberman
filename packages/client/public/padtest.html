@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Gamepad diagnostic</title>
+    <style>
+      body { background: #111; color: #eee; font: 14px/1.5 monospace; padding: 24px; }
+      #pads { white-space: pre-wrap; }
+      .hit { color: #7f7; }
+      h1 { font-size: 16px; color: #ffe040; }
+    </style>
+  </head>
+  <body>
+    <h1>Gamepad diagnostic — press any button on the controller</h1>
+    <div id="pads">waiting…</div>
+    <script>
+      const out = document.getElementById('pads');
+      let connectedSeen = false;
+      window.addEventListener('gamepadconnected', (e) => {
+        connectedSeen = true;
+        console.log('gamepadconnected', e.gamepad.index, e.gamepad.id, e.gamepad.mapping);
+      });
+      function render() {
+        const pads = Array.from(navigator.getGamepads ? navigator.getGamepads() : []);
+        const live = pads.filter(Boolean);
+        if (live.length === 0) {
+          out.textContent =
+            'navigator.getGamepads(): no pads visible.\n' +
+            'Chrome hides pads until the page receives input FROM the pad — press A/B/X/Y now.\n' +
+            'gamepadconnected fired: ' + connectedSeen;
+        } else {
+          out.innerHTML = live
+            .map((p) => {
+              const pressed = p.buttons
+                .map((b, i) => (b.pressed ? i : null))
+                .filter((i) => i !== null);
+              const axes = p.axes.map((a, i) => `${i}:${a.toFixed(2)}`).join('  ');
+              return [
+                `index:   ${p.index}`,
+                `id:      ${p.id}`,
+                `mapping: ${p.mapping || '(EMPTY — non-standard mapping!)'}`,
+                `buttons: ${p.buttons.length}   axes: ${p.axes.length}`,
+                `pressed: <span class="hit">${pressed.join(', ') || '(none)'}</span>`,
+                `axes:    ${axes}`,
+              ].join('\n');
+            })
+            .join('\n\n');
+        }
+        requestAnimationFrame(render);
+      }
+      render();
+    </script>
+  </body>
+</html>

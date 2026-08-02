@@ -17,6 +17,9 @@ new Phaser.Game({
   width: GRID_WIDTH * TILE_SIZE + 2 * GRID_FRAME_WIDTH, // 720 + 36 = 756
   height: GRID_HEIGHT * TILE_SIZE + HUD_HEIGHT + GRID_TOP_MARGIN + GRID_FRAME_WIDTH, // 624 + 40 + 24 + 18 = 706
   backgroundColor: '#222222',
+  // Gamepads are read via navigator.getGamepads() in GamepadInput — Phaser's
+  // GamepadPlugin is deliberately NOT enabled (its shutdown crashes on pads
+  // occupying slot 1+, wedging every scene transition).
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,

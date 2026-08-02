@@ -73,7 +73,7 @@ export function buildSkillsTable(
     scene.add.text(
       x,
       y + HEADER_GAP + SKILLS.length * ROW_HEIGHT + 6,
-      'Move: arrows / WASD    Bomb: Space (fires the held skill instead)',
+      'Move: arrows / WASD / pad    Bomb: Space or A (fires the held skill instead)',
       {
         fontFamily: 'monospace',
         fontSize: '13px',

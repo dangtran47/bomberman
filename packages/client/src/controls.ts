@@ -4,8 +4,9 @@
  *
  * Space is the real trigger: the sim turns it into a gun shot or hammer swing
  * whenever one is held (and refuses to place bombs until it runs out). E/Q stay
- * wired as direct aliases, but the UI advertises Space.
+ * wired as direct aliases, but the UI advertises Space. A gamepad's A button is
+ * the same trigger.
  */
-export const SKILL_KEY_LABEL = 'Space';
+export const SKILL_KEY_LABEL = 'Space/A';
 export const GUN_KEY = 'E';
 export const HAMMER_KEY = 'Q';

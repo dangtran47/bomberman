@@ -26,6 +26,7 @@ import type {
 } from '@bomberman/shared';
 import { audio } from '../audio';
 import { GUN_KEY, HAMMER_KEY, SKILL_KEY_LABEL } from '../controls';
+import { GamepadInput } from '../gamepad';
 import { INTERP_DELAY_MS, SnapshotBuffer } from '../interpolation';
 import type { GameRoomConnection, NetPlayer, NetRoomState } from '../net';
 import { Predictor } from '../prediction';
@@ -373,6 +374,8 @@ export class GameScene extends Phaser.Scene {
 
   private directionKeys: [Phaser.Input.Keyboard.Key, Direction][] = [];
   private spaceKey!: Phaser.Input.Keyboard.Key;
+  /** Gamepad mirror of the direction keys + Space, polled once per frame. */
+  private pad!: GamepadInput;
   private gunKey!: Phaser.Input.Keyboard.Key;
   private hammerKey!: Phaser.Input.Keyboard.Key;
   /**
@@ -440,6 +443,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(data: GameSceneData): void {
+    if (import.meta.env.DEV) (window as never as { __scene?: unknown }).__scene = this;
     this.mode = data.mode;
     this.accumulator = 0;
     this.gameOver = false;
@@ -641,7 +645,7 @@ export class GameScene extends Phaser.Scene {
       // Gun/hammer are one-shot: the latch is cleared as this tick consumes it.
       [HUMAN_ID]: {
         direction: this.currentDirection(),
-        placeBomb: this.spaceKey.isDown,
+        placeBomb: this.triggerHeld(),
         fireGun: this.pendingGun,
         swingHammer: this.pendingHammer,
       },
@@ -711,9 +715,10 @@ export class GameScene extends Phaser.Scene {
     if (armed === 'gun' && this.pendingTrigger) this.pendingGun = true;
     if (armed === 'hammer' && this.pendingTrigger) this.pendingHammer = true;
     this.pendingTrigger = false;
-    if (!this.spaceKey.isDown) this.triggerServedSkill = false;
+    const triggerHeld = this.triggerHeld();
+    if (!triggerHeld) this.triggerServedSkill = false;
     else if (armed !== null) this.triggerServedSkill = true;
-    const bombHeld = armed === null && this.spaceKey.isDown && !this.triggerServedSkill;
+    const bombHeld = armed === null && triggerHeld && !this.triggerServedSkill;
 
     // One sequenced input per 20Hz step: the server applies each for exactly one
     // tick, so held-key duration (and therefore distance) is reproduced exactly.
@@ -1039,17 +1044,26 @@ export class GameScene extends Phaser.Scene {
     this.spaceKey = keyboard.addKey('SPACE');
     this.gunKey = keyboard.addKey(GUN_KEY);
     this.hammerKey = keyboard.addKey(HAMMER_KEY);
+    this.pad = new GamepadInput();
   }
 
   /**
-   * Latches this frame's skill key presses. JustDown consumes the edge, so it
-   * must be polled exactly once per frame regardless of how many sim steps or
-   * input sends follow.
+   * Latches this frame's skill key presses and reads the pad. JustDown consumes
+   * the edge, so it must be polled exactly once per frame regardless of how many
+   * sim steps or input sends follow.
    */
   private pollSkillKeys(): void {
+    this.pad.poll(this.time.now);
     if (Phaser.Input.Keyboard.JustDown(this.gunKey)) this.pendingGun = true;
     if (Phaser.Input.Keyboard.JustDown(this.hammerKey)) this.pendingHammer = true;
-    if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) this.pendingTrigger = true;
+    if (Phaser.Input.Keyboard.JustDown(this.spaceKey) || this.pad.consumeTriggerPress()) {
+      this.pendingTrigger = true;
+    }
+  }
+
+  /** Space or the pad's trigger button: bomb, gun and hammer all ride this one. */
+  private triggerHeld(): boolean {
+    return this.spaceKey.isDown || this.pad.triggerHeld;
   }
 
   /**
@@ -1071,6 +1085,13 @@ export class GameScene extends Phaser.Scene {
     for (const [key, dir] of this.directionKeys) {
       if (key.isDown && key.timeDown > latestTime) {
         latestTime = key.timeDown;
+        latest = dir;
+      }
+    }
+    // Pad press times share the keyboard's clock, so both sources sort together.
+    for (const [dir, time] of this.pad.heldDirections()) {
+      if (time > latestTime) {
+        latestTime = time;
         latest = dir;
       }
     }
