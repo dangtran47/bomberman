@@ -20,7 +20,7 @@ export const MAX_BOMB_COUNT = 8;
 export const MAX_BLAST_RADIUS = 8;
 
 export const SOFT_BLOCK_DENSITY = 0.75; // fraction of eligible floor tiles that become soft blocks
-export const POWERUP_DROP_CHANCE = 0.3;
+export const POWERUP_DROP_CHANCE = 0.5;
 export const POWERUP_TYPE_COUNT = 6;
 
 /**
