@@ -144,6 +144,12 @@ function finishJoin(room: Room<NetRoomState>): Promise<GameRoomConnection> {
       const playerId = findSelf();
       if (playerId !== null) {
         cleanup();
+        if (import.meta.env.DEV) {
+          // Dev-only test hook: scripts/multiplayer-sim.ts reads the synced
+          // state (room code, phase, players) to drive bot players through
+          // real browser input. Stripped from production builds.
+          (window as unknown as { __room?: unknown }).__room = { room, playerId };
+        }
         resolve({ room, playerId });
       }
     };

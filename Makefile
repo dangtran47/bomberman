@@ -1,4 +1,4 @@
-.PHONY: start install server client build test deploy deploy-fe deploy-server deploy-be
+.PHONY: start install server client build test simtest deploy deploy-fe deploy-server deploy-be
 
 # Prod server URL baked into client bundle at build time
 VITE_SERVER_URL ?= wss://bomberman-server-prd.fly.dev
@@ -35,6 +35,13 @@ build:
 # Run all tests
 test:
 	npm test
+
+# 4-browser multiplayer sim: spawns server (simulated latency) + client, then
+# 4 Chrome windows play a full round via real UI/keyboard input.
+# Usage: make simtest [LAG=50] [PLAYERS=4]
+simtest: LAG = 50
+simtest:
+	LAG=$(LAG) PLAYERS=$(PLAYERS) node_modules/.bin/tsx scripts/multiplayer-sim.ts
 
 # Deploy both frontend and backend
 deploy: deploy-fe deploy-be
