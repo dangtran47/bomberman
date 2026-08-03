@@ -7,7 +7,7 @@ Status: Approved by user (trigger/timeline/acquisition/blast choices confirmed)
 
 A new placeable weapon: the proximity mine. A player with the Mine skill places a mine on
 their tile. The mine arms after 3 seconds, then buries itself 7 seconds after arming,
-leaving only a blinking red dot. Any player (including the owner) who steps on an armed or
+becoming fully invisible. Any player (including the owner) who steps on an armed or
 buried mine detonates it, burning that single tile.
 
 ## User-approved decisions
@@ -53,7 +53,8 @@ buried mine detonates it, burning that single tile.
 - Rendering by phase, in a `reconcileMines()` mirroring `reconcileBombs()`:
   - Phase 0 (inert): static dull frame.
   - Phase 1 (armed): alternate dull ↔ lit every ~250 ms (timer-driven texture swap).
-  - Phase 2 (buried): red-dot frame only, toggling visible ↔ hidden every ~400 ms.
+  - Phase 2 (buried): renders nothing at all. (Amended from blinking red dot: bomb
+    blasts destroy mines, so full invisibility has counter-play and is fair.)
   - Removal: existing explosion sprite + sound handle the detonation feedback.
 - Input: skill key already routes to the held skill (gun fires, hammer swings); with the
   Mine skill held it sends a `placeMine` input flag. Skills table gains a Mine row (icon =

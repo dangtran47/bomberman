@@ -61,7 +61,7 @@ export function buildSkillsTable(
   SKILLS.forEach((skill, i) => {
     const rowY = y + HEADER_GAP + i * ROW_HEIGHT;
     const icon = addImage(scene, x + ICON_SIZE / 2, rowY + ICON_SIZE / 2, TEX.powerup[skill.type]);
-    icon.setScale(ICON_SIZE / icon.height);
+    icon.setScale(ICON_SIZE / Math.max(icon.width, icon.height));
     objects.push(icon);
 
     const name = skill.key ? `${skill.name} [${skill.key}]` : skill.name;

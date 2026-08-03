@@ -146,11 +146,11 @@ export const SPRITE_SIZE = {
   playerHeight: 44,
   bombHeight: 40,
   /**
-   * Mines lie flat on the tile, so they read as a wide low disc: 32px tall is
-   * ~46px wide, filling the tile without spilling onto its neighbours. Both body
+   * Mines lie flat on the tile, so they read as a wide low disc: 24px tall is
+   * ~35px wide, sitting well inside the tile. Both body
    * frames scale to this height so the armed blink swaps art, not size.
    */
-  mineHeight: 32,
+  mineHeight: 24,
   /** Buried mine's red dot, in proportion to the button on the body frames. */
   mineDotHeight: 12,
   powerupHeight: 36,

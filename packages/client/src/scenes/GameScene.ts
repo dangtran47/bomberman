@@ -145,9 +145,8 @@ const WALK_EPSILON = 0.002;
 const WALK_HOLD_MS = 120;
 /** Bomb pulse tween grows the sprite to this multiple of its base scale. */
 const BOMB_PULSE = 1.15;
-/** Mine blink periods (ms): body lights while armed, red dot while buried. */
+/** Mine blink period (ms): body lights while armed. */
 const MINE_BLINK_MS = 250;
-const MINE_DOT_BLINK_MS = 400;
 /**
  * Online, only the mine's phase is synced, so the render path's tick count is
  * rebuilt at that phase's first tick. It is never read as an age — `minePhase`
@@ -1584,7 +1583,7 @@ export class GameScene extends Phaser.Scene {
       let badge = badges.get(skill.key);
       if (!badge) {
         const icon = addImage(this, x, rowY, TEX.powerup[skill.type]).setDepth(DEPTH.effect);
-        icon.setScale(SKILL_BADGE_HEIGHT / icon.height);
+        icon.setScale(SKILL_BADGE_HEIGHT / Math.max(icon.width, icon.height));
         const count = skill.showCount
           ? this.add
               .text(x, rowY + SKILL_BADGE_HEIGHT / 2, '', {
@@ -1763,23 +1762,19 @@ export class GameScene extends Phaser.Scene {
 
   /**
    * Dresses a mine for one phase: inert lies still, armed alternates its lights,
-   * buried drops the body for the bare red dot. Each phase owns its repeating
-   * timer, so the one before it is always cleared first.
+   * buried hides the sprite entirely (bomb blasts can destroy mines, so full
+   * invisibility is fair). Each phase owns its repeating timer, so the one
+   * before it is always cleared first.
    */
   private showMinePhase(entry: MineSprite, phase: number): void {
     entry.blink?.remove();
     entry.blink = null;
     const { sprite } = entry;
-    sprite.setVisible(true);
     if (phase === 2) {
-      this.setMineFrame(sprite, TEX.mine.dot, SPRITE_SIZE.mineDotHeight);
-      entry.blink = this.time.addEvent({
-        delay: MINE_DOT_BLINK_MS,
-        loop: true,
-        callback: () => sprite.setVisible(!sprite.visible),
-      });
+      sprite.setVisible(false);
       return;
     }
+    sprite.setVisible(true);
     this.setMineFrame(sprite, TEX.mine.dull, SPRITE_SIZE.mineHeight);
     if (phase !== 1) return;
     let lit = false;
@@ -1852,7 +1847,7 @@ export class GameScene extends Phaser.Scene {
       const sprite = addImage(this, toX(col), toY(row), ref).setDepth(
         worldDepth(row, WORLD_LAYER.powerup),
       );
-      sprite.setScale(SPRITE_SIZE.powerupHeight / sprite.height);
+      sprite.setScale(SPRITE_SIZE.powerupHeight / Math.max(sprite.width, sprite.height));
       this.tweens.add({
         targets: sprite,
         y: sprite.y - POWERUP_BOB,
