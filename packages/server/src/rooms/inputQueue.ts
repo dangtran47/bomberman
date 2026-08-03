@@ -10,6 +10,7 @@ interface QueuedInput {
   placeBomb: boolean;
   fireGun: boolean;
   swingHammer: boolean;
+  placeMine: boolean;
 }
 
 interface LegacyEntry {
@@ -17,6 +18,7 @@ interface LegacyEntry {
   placeBomb: boolean;
   fireGun: boolean;
   swingHammer: boolean;
+  placeMine: boolean;
 }
 
 interface PlayerEntry {
@@ -51,12 +53,13 @@ export class InputQueue {
   /** Applies a raw (untrusted) client message; malformed messages are ignored. */
   push(playerId: string, message: unknown): void {
     if (typeof message !== 'object' || message === null) return;
-    const { seq, direction, placeBomb, fireGun, swingHammer } = message as {
+    const { seq, direction, placeBomb, fireGun, swingHammer, placeMine } = message as {
       seq?: unknown;
       direction?: unknown;
       placeBomb?: unknown;
       fireGun?: unknown;
       swingHammer?: unknown;
+      placeMine?: unknown;
     };
     const validDirection = direction === null || DIRECTIONS.includes(direction as string);
     if (!validDirection || typeof placeBomb !== 'boolean') return;
@@ -70,11 +73,13 @@ export class InputQueue {
         placeBomb: false,
         fireGun: false,
         swingHammer: false,
+        placeMine: false,
       };
       legacy.direction = dir;
       legacy.placeBomb = legacy.placeBomb || placeBomb;
       legacy.fireGun = legacy.fireGun || fireGun === true;
       legacy.swingHammer = legacy.swingHammer || swingHammer === true;
+      legacy.placeMine = legacy.placeMine || placeMine === true;
       entry.legacy = legacy;
       return;
     }
@@ -87,6 +92,7 @@ export class InputQueue {
       placeBomb,
       fireGun: fireGun === true,
       swingHammer: swingHammer === true,
+      placeMine: placeMine === true,
     });
     // Backlog cap: drop the oldest. The ack naturally skips dropped seqs when a
     // later input is consumed, so the client discards them from its pending list.
@@ -106,6 +112,7 @@ export class InputQueue {
           placeBomb: next.placeBomb,
           fireGun: next.fireGun,
           swingHammer: next.swingHammer,
+          placeMine: next.placeMine,
         });
       } else if (entry.legacy) {
         const l = entry.legacy;
@@ -114,10 +121,12 @@ export class InputQueue {
           placeBomb: l.placeBomb,
           fireGun: l.fireGun,
           swingHammer: l.swingHammer,
+          placeMine: l.placeMine,
         });
         l.placeBomb = false;
         l.fireGun = false;
         l.swingHammer = false;
+        l.placeMine = false;
       } else {
         // Queue dry (TCP stall): hold the last direction, no actions, ack frozen.
         snapshot.set(id, { direction: entry.heldDirection, placeBomb: false });

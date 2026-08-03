@@ -61,9 +61,11 @@ buried mine detonates it, burning that single tile.
 
 ## Bot AI (packages/shared/src/bot.ts)
 
-- Armed and buried mine tiles join the `danger` set in `buildContext`, so pathfinding and
-  flee logic avoid them. Inert mines are ignored (safe by definition) and never block
-  movement.
+- All mine tiles (inert included) join the `danger` set in `buildContext`, so pathfinding
+  and flee logic avoid them. Mines never block movement. (Amended from "inert ignored":
+  sim runs showed bots placing a mine and standing on it until it armed — 33/54 self-kills;
+  including inert tiles in danger dropped this to 9/92.) `computeDangerTimes` ranks a mine
+  tile by ticks-until-armed.
 
 ## Out of scope (YAGNI)
 

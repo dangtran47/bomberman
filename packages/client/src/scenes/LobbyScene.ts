@@ -331,7 +331,7 @@ export class LobbyScene extends Phaser.Scene {
    */
   private buildSkillsPanel(): void {
     const width = 620;
-    const height = 292; // header + 6 skill rows
+    const height = 318; // header + 7 skill rows
     const cx = this.scale.width / 2;
     const cy = 332;
     const panelLeft = cx - width / 2;

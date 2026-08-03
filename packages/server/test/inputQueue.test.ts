@@ -56,6 +56,32 @@ describe('InputQueue', () => {
     expect(q.acked('p0')).toBe(0);
   });
 
+  it('carries placeMine through the queue alongside the other skill flags', () => {
+    const q = new InputQueue();
+    q.push('p0', msg(1, 'up', { fireGun: true, swingHammer: true, placeMine: true }));
+    q.push('p0', msg(2, 'up'));
+    expect(q.consume().get('p0')).toMatchObject({
+      fireGun: true,
+      swingHammer: true,
+      placeMine: true,
+    });
+    expect(q.consume().get('p0')).toMatchObject({ placeMine: false });
+  });
+
+  it('keeps a legacy placeMine press sticky until a tick consumes it', () => {
+    const q = new InputQueue();
+    q.push('p0', { direction: 'right', placeBomb: false, placeMine: true });
+    q.push('p0', { direction: 'down', placeBomb: false });
+    expect(q.consume().get('p0')).toMatchObject({ direction: 'down', placeMine: true });
+    expect(q.consume().get('p0')).toMatchObject({ direction: 'down', placeMine: false });
+  });
+
+  it('ignores non-boolean placeMine without dropping the message', () => {
+    const q = new InputQueue();
+    q.push('p0', msg(1, 'up', { placeMine: 'yes' }));
+    expect(q.consume().get('p0')).toMatchObject({ direction: 'up', placeMine: false });
+  });
+
   it('ignores malformed messages', () => {
     const q = new InputQueue();
     q.push('p0', null);

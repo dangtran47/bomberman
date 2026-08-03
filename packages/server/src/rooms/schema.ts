@@ -1,4 +1,5 @@
 import { ArraySchema, MapSchema, Schema, type } from '@colyseus/schema';
+import { minePhase } from '@bomberman/shared';
 import type { GameState } from '@bomberman/shared';
 
 export type Phase = 'lobby' | 'playing' | 'finished';
@@ -20,6 +21,7 @@ export class PlayerSchema extends Schema {
   @type('number') kickTicks = 0;
   @type('number') gunAmmo = 0;
   @type('number') hammerUses = 0;
+  @type('number') mineAmmo = 0;
   /** Last requested direction; the client aims skill FX with it. */
   @type('string') facing = 'down';
   @type('number') wins = 0;
@@ -42,6 +44,15 @@ export class BombSchema extends Schema {
   @type('number') fuseTicks = 0;
   @type('number') blastRadius = 1;
   @type('number') slideInterval = 0;
+}
+
+export class MineSchema extends Schema {
+  @type('number') id = 0;
+  @type('number') col = 0;
+  @type('number') row = 0;
+  @type('string') ownerId = '';
+  /** 0 inert, 1 armed, 2 buried — derived from the sim's tick count. */
+  @type('number') phase = 0;
 }
 
 export class ExplosionSchema extends Schema {
@@ -71,6 +82,7 @@ export class RoomState extends Schema {
   @type(['number']) arenaShrunk = new ArraySchema<number>();
   @type({ map: PlayerSchema }) players = new MapSchema<PlayerSchema>();
   @type({ map: BombSchema }) bombs = new MapSchema<BombSchema>();
+  @type({ map: MineSchema }) mines = new MapSchema<MineSchema>();
   @type([ExplosionSchema]) explosions = new ArraySchema<ExplosionSchema>();
   @type([PowerupSchema]) powerups = new ArraySchema<PowerupSchema>();
   /** Winner playerId once phase is 'finished'; '' means draw (or not finished yet). */
@@ -79,8 +91,8 @@ export class RoomState extends Schema {
 
 /**
  * Mirrors the authoritative sim state into the synced schema after a tick.
- * Players and bombs are updated in place (delta-friendly); the short-lived
- * explosion/powerup lists are rebuilt (tiny at this scale).
+ * Players, bombs and mines are updated in place by key; the short-lived
+ * explosion/powerup lists are updated in place by index (see the note below).
  */
 export function copySimToSchema(sim: GameState, out: RoomState): void {
   out.tick = sim.tick;
@@ -98,6 +110,7 @@ export function copySimToSchema(sim: GameState, out: RoomState): void {
     ps.kickTicks = player.kickTicks;
     ps.gunAmmo = player.gunAmmo;
     ps.hammerUses = player.hammerUses;
+    ps.mineAmmo = player.mineAmmo;
     ps.facing = player.facing;
     ps.momentumDir = player.momentumDir ?? '';
     ps.momentumTicks = player.momentumTicks;
@@ -124,6 +137,27 @@ export function copySimToSchema(sim: GameState, out: RoomState): void {
     bs.row = bomb.row;
     bs.fuseTicks = bomb.fuseTicks;
     bs.slideInterval = bomb.slideInterval;
+  }
+
+  const liveMineIds = new Set(sim.mines.map((m) => String(m.id)));
+  for (const key of [...out.mines.keys()]) {
+    if (!liveMineIds.has(key)) out.mines.delete(key);
+  }
+  for (const mine of sim.mines) {
+    const key = String(mine.id);
+    let ms = out.mines.get(key);
+    if (!ms) {
+      ms = new MineSchema();
+      ms.id = mine.id;
+      ms.col = mine.col;
+      ms.row = mine.row;
+      ms.ownerId = mine.ownerId;
+      out.mines.set(key, ms);
+    }
+    // Mines never move, so phase is the only field that changes — and only
+    // twice per lifetime. Guard the write so idle mines cost no delta.
+    const phase = minePhase(mine.ticks);
+    if (ms.phase !== phase) ms.phase = phase;
   }
 
   // Explosions/powerups are updated in place by index, reusing schema

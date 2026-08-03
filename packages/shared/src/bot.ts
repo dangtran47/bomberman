@@ -3,6 +3,7 @@ import {
   BOT_HAMMER_ATTACK_CHANCE,
   GRID_HEIGHT,
   GRID_WIDTH,
+  MINE_ARM_TICKS,
 } from './constants';
 import { SHRINK_ORDER, shrinkCountAtTick } from './suddenDeath';
 import { TileType } from './types';
@@ -48,7 +49,7 @@ interface BotContext {
   bombTiles: Set<number>;
   /** Tiles currently covered by an active explosion (entering kills). */
   burning: Set<number>;
-  /** burning ∪ future blast cells of every ticking bomb, any fuse. */
+  /** burning ∪ future blast cells of every ticking bomb ∪ live mine tiles. */
   danger: Set<number>;
 }
 
@@ -92,6 +93,11 @@ function buildContext(state: GameState): BotContext {
       danger.add(key(c, r)),
     );
   }
+  // Mines threaten their own tile only, and never block movement (so they stay
+  // out of bombTiles). Inert ones count too: crossing one is safe, but the bot
+  // has no notion of "leave before it arms", and standing on the mine it just
+  // dropped until it goes live is the most common way to die to one.
+  for (const mine of state.mines) danger.add(key(mine.col, mine.row));
   // Sudden death: tiles about to be crushed are dangerous too. Already-converted
   // tiles are HardBlock and impassable, so only upcoming ones matter.
   const upcomingEnd = shrinkCountAtTick(state.tick + SHRINK_LOOKAHEAD_TICKS);
@@ -173,6 +179,11 @@ function computeDangerTimes(ctx: BotContext): Map<number, number> {
     if (prev === undefined || t < prev) times.set(k, t);
   };
   for (const cell of ctx.state.explosions) put(cell.col, cell.row, 0);
+  // A mine's tile is threatened from the tick it arms, and a live one goes off
+  // the instant it is stepped on — the arming countdown is its fuse.
+  for (const mine of ctx.state.mines) {
+    put(mine.col, mine.row, Math.max(0, MINE_ARM_TICKS - mine.ticks));
+  }
   for (const bomb of ctx.state.bombs) {
     forEachBlastCell(ctx.state, ctx.bombTiles, bomb.col, bomb.row, bomb.blastRadius, (c, r) =>
       put(c, r, bomb.fuseTicks),

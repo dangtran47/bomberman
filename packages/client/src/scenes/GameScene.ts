@@ -3,6 +3,8 @@ import {
   GRID_HEIGHT,
   GRID_WIDTH,
   KICK_WARNING_TICKS,
+  MINE_ARM_TICKS,
+  MINE_BURY_TICKS,
   PowerupType,
   SUDDEN_DEATH_START_TICKS,
   TICK_MS,
@@ -15,6 +17,7 @@ import {
   createRng,
   generateMap,
   getMapDef,
+  minePhase,
 } from '@bomberman/shared';
 import type {
   Bot,
@@ -117,7 +120,7 @@ const DEPTH = {
  */
 const ROW_DEPTH = 10;
 /** Same-cell draw order for co-located raised objects (offsets < ROW_DEPTH). */
-const WORLD_LAYER = { block: 1, powerup: 2, bomb: 3, player: 4 } as const;
+const WORLD_LAYER = { mine: 0, block: 1, powerup: 2, bomb: 3, player: 4 } as const;
 /**
  * Depth for a raised world object at grid `row` (may be fractional for smooth
  * player motion). Lower rows get a strictly larger depth than the row above,
@@ -142,6 +145,15 @@ const WALK_EPSILON = 0.002;
 const WALK_HOLD_MS = 120;
 /** Bomb pulse tween grows the sprite to this multiple of its base scale. */
 const BOMB_PULSE = 1.15;
+/** Mine blink periods (ms): body lights while armed, red dot while buried. */
+const MINE_BLINK_MS = 250;
+const MINE_DOT_BLINK_MS = 400;
+/**
+ * Online, only the mine's phase is synced, so the render path's tick count is
+ * rebuilt at that phase's first tick. It is never read as an age — `minePhase`
+ * turns it straight back into the phase it came from.
+ */
+const MINE_PHASE_TICKS = [0, MINE_ARM_TICKS, MINE_BURY_TICKS];
 /** Max random tilt (radians) applied to each explosion pom, visual only. */
 const EXPLOSION_MAX_TILT = 0.3;
 /** Powerup bob tween amplitude in pixels. */
@@ -239,6 +251,7 @@ const SKILL_BADGES: {
   { key: 'kick', type: PowerupType.Kick, value: (p) => p.kickTicks, showCount: false },
   { key: 'gun', type: PowerupType.Gun, value: (p) => p.gunAmmo, showCount: true },
   { key: 'hammer', type: PowerupType.Hammer, value: (p) => p.hammerUses, showCount: true },
+  { key: 'mine', type: PowerupType.Mine, value: (p) => p.mineAmmo, showCount: true },
 ];
 
 /** Grid delta per facing direction (mirrors the sim's step table). */
@@ -283,6 +296,7 @@ export interface RenderPlayer {
   kickTicks: number;
   gunAmmo: number;
   hammerUses: number;
+  mineAmmo: number;
   facing: Direction;
 }
 
@@ -310,11 +324,24 @@ function predictedFromNet(p: NetPlayer): PredictedPlayer {
   };
 }
 
+/**
+ * One rendered mine. `phase` is the phase its visuals were built for, so a
+ * change is spotted by comparing against the snapshot; `blink` is that phase's
+ * timer, owned by the entry so it dies with the sprite.
+ */
+interface MineSprite {
+  sprite: Phaser.GameObjects.Image;
+  phase: number;
+  blink: Phaser.Time.TimerEvent | null;
+}
+
 export interface RenderState {
   tick: number;
   grid: TileType[][];
   players: RenderPlayer[];
   bombs: { id: number; col: number; row: number; slideInterval: number }[];
+  /** `ticks` is the sim's age; the render path only reads it via `minePhase`. */
+  mines: { id: number; col: number; row: number; ticks: number }[];
   explosions: { col: number; row: number }[];
   powerups: { col: number; row: number; type: PowerupType }[];
 }
@@ -384,6 +411,7 @@ export class GameScene extends Phaser.Scene {
    */
   private pendingGun = false;
   private pendingHammer = false;
+  private pendingMine = false;
   /** Online: latched Space press, routed to whichever skill is held. */
   private pendingTrigger = false;
   /**
@@ -420,6 +448,7 @@ export class GameScene extends Phaser.Scene {
   private prevHammerUses = new Map<string, number>();
   private softBlockSprites = new Map<string, Phaser.GameObjects.Image>();
   private bombSprites = new Map<number, { sprite: Phaser.GameObjects.Image; col: number; row: number }>();
+  private mineSprites = new Map<number, MineSprite>();
   private explosionSprites = new Map<string, Phaser.GameObjects.Image>();
   private powerupSprites = new Map<string, { sprite: Phaser.GameObjects.Image; ref: TexRef }>();
   /** Cells whose bomb vanished this reconcile pass — the explosion's origin. */
@@ -459,6 +488,7 @@ export class GameScene extends Phaser.Scene {
     this.suddenDeathWarned = false;
     this.pendingGun = false;
     this.pendingHammer = false;
+    this.pendingMine = false;
     this.pendingTrigger = false;
     this.triggerServedSkill = false;
     this.prevAlive.clear();
@@ -475,6 +505,7 @@ export class GameScene extends Phaser.Scene {
     this.prevSkillValues.clear();
     this.softBlockSprites.clear();
     this.bombSprites.clear();
+    this.mineSprites.clear();
     this.explosionSprites.clear();
     this.powerupSprites.clear();
     this.explosionCenters.clear();
@@ -672,7 +703,11 @@ export class GameScene extends Phaser.Scene {
         audio.bombPlace();
         break;
       case 'bombExploded':
+      case 'mineExploded':
         audio.explosion();
+        break;
+      case 'minePlaced':
+        audio.bombPlace();
         break;
       case 'powerupCollected':
         audio.powerup();
@@ -718,6 +753,7 @@ export class GameScene extends Phaser.Scene {
     const armed = this.myArmedSkill();
     if (armed === 'gun' && this.pendingTrigger) this.pendingGun = true;
     if (armed === 'hammer' && this.pendingTrigger) this.pendingHammer = true;
+    if (armed === 'mine' && this.pendingTrigger) this.pendingMine = true;
     this.pendingTrigger = false;
     const triggerHeld = this.triggerHeld();
     if (!triggerHeld) this.triggerServedSkill = false;
@@ -825,10 +861,12 @@ export class GameScene extends Phaser.Scene {
         placeBomb: bombHeld,
         fireGun: this.pendingGun,
         swingHammer: this.pendingHammer,
+        placeMine: this.pendingMine,
         pingMs: this.pingMs ?? 0,
       });
       this.pendingGun = false;
       this.pendingHammer = false;
+      this.pendingMine = false;
     }
   }
 
@@ -905,6 +943,7 @@ export class GameScene extends Phaser.Scene {
         kickTicks: p.kickTicks,
         gunAmmo: p.gunAmmo,
         hammerUses: p.hammerUses,
+        mineAmmo: p.mineAmmo,
         facing: p.facing,
       }),
     );
@@ -945,6 +984,12 @@ export class GameScene extends Phaser.Scene {
         }
       }
     }
+    // Mines stay server-authoritative — no prediction, so the synced phase is the
+    // only source: map it back to a representative tick count for the renderer.
+    const mines: RenderState['mines'] = [];
+    s.mines.forEach((m) =>
+      mines.push({ id: m.id, col: m.col, row: m.row, ticks: MINE_PHASE_TICKS[m.phase] ?? 0 }),
+    );
     const explosions: RenderState['explosions'] = [];
     s.explosions.forEach((e) => explosions.push({ col: e.col, row: e.row }));
     const powerups: RenderState['powerups'] = [];
@@ -955,7 +1000,7 @@ export class GameScene extends Phaser.Scene {
       powerups.push({ col: p.col, row: p.row, type: p.type });
     });
 
-    return { tick: s.tick, grid: this.grid!, players, bombs, explosions, powerups };
+    return { tick: s.tick, grid: this.grid!, players, bombs, mines, explosions, powerups };
   }
 
   /** Applies newly appended destroyedBlocks indices to the locally generated grid. */
@@ -1065,7 +1110,7 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** Space or the pad's trigger button: bomb, gun and hammer all ride this one. */
+  /** Space or the pad's trigger button: bomb, gun, hammer and mine all ride this one. */
   private triggerHeld(): boolean {
     return this.spaceKey.isDown || this.pad.triggerHeld;
   }
@@ -1074,11 +1119,12 @@ export class GameScene extends Phaser.Scene {
    * Which skill Space triggers right now, or null when it still places bombs.
    * Online only: offline the sim reads the held key and edges it itself.
    */
-  private myArmedSkill(): 'gun' | 'hammer' | null {
+  private myArmedSkill(): 'gun' | 'hammer' | 'mine' | null {
     const me = this.connection?.room.state.players.get(this.myId);
     if (!me) return null;
     if (me.gunAmmo > 0) return 'gun';
     if (me.hammerUses > 0) return 'hammer';
+    if (me.mineAmmo > 0) return 'mine';
     return null;
   }
 
@@ -1579,6 +1625,7 @@ export class GameScene extends Phaser.Scene {
   private reconcile(state: RenderState): void {
     this.reconcileSoftBlocks(state);
     this.reconcileBombs(state);
+    this.reconcileMines(state);
     this.reconcileExplosions(state);
     this.reconcilePowerups(state);
   }
@@ -1678,6 +1725,78 @@ export class GameScene extends Phaser.Scene {
       });
       this.bombSprites.set(bomb.id, { sprite, col: bomb.col, row: bomb.row });
     }
+  }
+
+  /**
+   * Mines never move and are never predicted, so this is add/remove plus a
+   * phase watch: a mine that left the map detonated, and its boom is already
+   * drawn (and sounded) by the explosion cell it spawned.
+   */
+  private reconcileMines(state: RenderState): void {
+    const liveIds = new Set(state.mines.map((m) => m.id));
+    for (const [id, entry] of this.mineSprites) {
+      if (!liveIds.has(id)) {
+        entry.blink?.remove();
+        entry.sprite.destroy();
+        this.mineSprites.delete(id);
+      }
+    }
+    for (const mine of state.mines) {
+      const phase = minePhase(mine.ticks);
+      const existing = this.mineSprites.get(mine.id);
+      if (existing) {
+        if (existing.phase !== phase) {
+          existing.phase = phase;
+          this.showMinePhase(existing, phase);
+        }
+        continue;
+      }
+      if (this.mode === 'online') audio.bombPlace(); // offline plays via minePlaced event
+      const sprite = addImage(this, toX(mine.col), toY(mine.row), TEX.mine.dull).setDepth(
+        worldDepth(mine.row, WORLD_LAYER.mine),
+      );
+      const entry: MineSprite = { sprite, phase, blink: null };
+      this.showMinePhase(entry, phase);
+      this.mineSprites.set(mine.id, entry);
+    }
+  }
+
+  /**
+   * Dresses a mine for one phase: inert lies still, armed alternates its lights,
+   * buried drops the body for the bare red dot. Each phase owns its repeating
+   * timer, so the one before it is always cleared first.
+   */
+  private showMinePhase(entry: MineSprite, phase: number): void {
+    entry.blink?.remove();
+    entry.blink = null;
+    const { sprite } = entry;
+    sprite.setVisible(true);
+    if (phase === 2) {
+      this.setMineFrame(sprite, TEX.mine.dot, SPRITE_SIZE.mineDotHeight);
+      entry.blink = this.time.addEvent({
+        delay: MINE_DOT_BLINK_MS,
+        loop: true,
+        callback: () => sprite.setVisible(!sprite.visible),
+      });
+      return;
+    }
+    this.setMineFrame(sprite, TEX.mine.dull, SPRITE_SIZE.mineHeight);
+    if (phase !== 1) return;
+    let lit = false;
+    entry.blink = this.time.addEvent({
+      delay: MINE_BLINK_MS,
+      loop: true,
+      callback: () => {
+        lit = !lit;
+        this.setMineFrame(sprite, lit ? TEX.mine.lit : TEX.mine.dull, SPRITE_SIZE.mineHeight);
+      },
+    });
+  }
+
+  /** The mine frames are drawn at different sizes, so a swap has to rescale. */
+  private setMineFrame(sprite: Phaser.GameObjects.Image, ref: TexRef, height: number): void {
+    sprite.setTexture(ref.key, ref.frame);
+    sprite.setScale(height / sprite.height);
   }
 
   private reconcileExplosions(state: RenderState): void {
@@ -1802,6 +1921,7 @@ export class GameScene extends Phaser.Scene {
     // Counters carry the trigger: while armed, Space fires instead of bombing.
     if (me.gunAmmo > 0) line += `  Gun[${SKILL_KEY_LABEL}]: ${me.gunAmmo}`;
     if (me.hammerUses > 0) line += `  Hammer[${SKILL_KEY_LABEL}]: ${me.hammerUses}`;
+    if (me.mineAmmo > 0) line += `  Mines[${SKILL_KEY_LABEL}]: ${me.mineAmmo}`;
     if (this.mode === 'online') {
       line += `  Ping: ${this.pingMs === null ? '--' : `${this.pingMs}ms`}`;
     }
@@ -1835,7 +1955,7 @@ export class GameScene extends Phaser.Scene {
 
   private buildSkillsPanel(): void {
     const width = 600;
-    const height = 236; // header + 6 skill rows + controls footer, with margin
+    const height = 262; // header + 7 skill rows + controls footer, with margin
     const cx = this.scale.width / 2;
     const cy = this.scale.height / 2;
     const panel = this.add

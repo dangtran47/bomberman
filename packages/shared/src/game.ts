@@ -13,12 +13,14 @@ import {
   MAX_BLAST_RADIUS,
   MAX_BOMB_COUNT,
   MAX_SPEED,
+  MINE_AMMO_PER_PICKUP,
   PING_CAP_MS,
   POWERUP_DROP_CHANCE,
   SKILL_ACTION_COOLDOWN_TICKS,
   SPEED_INCREMENT,
   SUDDEN_DEATH_INTERVAL_TICKS,
   SUDDEN_DEATH_START_TICKS,
+  minePhase,
   powerupTypeForRoll,
 } from './constants';
 import { SPAWN_POINTS, generateMap } from './map';
@@ -28,7 +30,7 @@ import type { MovementWorld } from './movement';
 import { SHRINK_ORDER } from './suddenDeath';
 import { createRng } from './rng';
 import { PowerupType, TileType } from './types';
-import type { Bomb, Direction, ExplosionCell, Player, PlayerInput, Powerup } from './types';
+import type { Bomb, Direction, ExplosionCell, Mine, Player, PlayerInput, Powerup } from './types';
 
 export type GameStatus = 'running' | 'finished';
 
@@ -39,6 +41,7 @@ export interface GameState {
   ice: boolean[][];
   players: Player[];
   bombs: Bomb[];
+  mines: Mine[];
   explosions: ExplosionCell[];
   powerups: Powerup[];
   status: GameStatus;
@@ -55,6 +58,8 @@ export type GameEvent =
       row: number;
       cells: { col: number; row: number }[];
     }
+  | { type: 'minePlaced'; mineId: number; ownerId: string; col: number; row: number }
+  | { type: 'mineExploded'; mineId: number; ownerId: string; col: number; row: number }
   | { type: 'blockDestroyed'; col: number; row: number }
   | { type: 'powerupSpawned'; col: number; row: number; powerupType: PowerupType }
   | {
@@ -155,6 +160,10 @@ function applyPowerup(player: Player, type: PowerupType): void {
       clearSkills(player);
       player.hammerUses = HAMMER_USES_PER_PICKUP;
       break;
+    case PowerupType.Mine:
+      clearSkills(player);
+      player.mineAmmo = MINE_AMMO_PER_PICKUP;
+      break;
   }
 }
 
@@ -163,12 +172,14 @@ function clearSkills(player: Player): void {
   player.kickTicks = 0;
   player.gunAmmo = 0;
   player.hammerUses = 0;
+  player.mineAmmo = 0;
 }
 
 class GameImpl implements Game {
   readonly state: GameState;
   private readonly rng: () => number;
   private nextBombId = 1;
+  private nextMineId = 1;
 
   constructor({ seed, playerIds, grid, mapId }: CreateGameOptions) {
     if (playerIds.length < 2 || playerIds.length > SPAWN_POINTS.length) {
@@ -194,6 +205,7 @@ class GameImpl implements Game {
         kickTicks: 0,
         gunAmmo: 0,
         hammerUses: 0,
+        mineAmmo: 0,
         actionCooldown: 0,
         triggerHeld: false,
         skillTriggerHeld: false,
@@ -206,6 +218,7 @@ class GameImpl implements Game {
         deathTick: null,
       })),
       bombs: [],
+      mines: [],
       explosions: [],
       powerups: [],
       status: 'running',
@@ -233,7 +246,7 @@ class GameImpl implements Game {
       // the whole magazine at the cooldown's rate).
       // A press that started as a skill trigger stays one until the key comes
       // back up: emptying the magazine mid-hold must not turn into a bomb.
-      const armed = player.gunAmmo > 0 || player.hammerUses > 0;
+      const armed = player.gunAmmo > 0 || player.hammerUses > 0 || player.mineAmmo > 0;
       const pressed = input.placeBomb && !player.triggerHeld;
       player.triggerHeld = input.placeBomb;
       if (!input.placeBomb) player.skillTriggerHeld = false;
@@ -242,12 +255,14 @@ class GameImpl implements Game {
       if (player.actionCooldown > 0) player.actionCooldown--;
       if (input.fireGun || (pressed && player.gunAmmo > 0)) this.fireGun(player, events);
       if (input.swingHammer || (pressed && player.hammerUses > 0)) this.swingHammer(player, events);
+      if (input.placeMine || (pressed && player.mineAmmo > 0)) this.placeMine(player, events);
       stepPlayer(this.world, player, input.direction ?? null);
     }
 
     this.ageExplosions();
     this.moveSlidingBombs();
     this.detonateDueBombs(events);
+    this.tickMines(events);
     this.applySuddenDeath(events);
     this.applyDeaths(events);
     this.collectPowerups(events);
@@ -275,6 +290,23 @@ class GameImpl implements Game {
     this.state.bombs.push(bomb);
     player.activeBombs++;
     events.push({ type: 'bombPlaced', bombId: bomb.id, ownerId: player.id, col, row });
+  }
+
+  /**
+   * Drops a mine on the player's own tile. Mines share the tile with nothing:
+   * one per tile, and never on a bomb (which keeps a mine from ever setting a
+   * bomb off, since its blast covers its own tile only).
+   */
+  private placeMine(player: Player, events: GameEvent[]): void {
+    const col = Math.round(player.x);
+    const row = Math.round(player.y);
+    if (player.mineAmmo <= 0) return;
+    if (this.state.mines.some((m) => m.col === col && m.row === row)) return;
+    if (this.state.bombs.some((b) => b.col === col && b.row === row)) return;
+    const mine: Mine = { id: this.nextMineId++, col, row, ownerId: player.id, ticks: 0 };
+    this.state.mines.push(mine);
+    player.mineAmmo--;
+    events.push({ type: 'minePlaced', mineId: mine.id, ownerId: player.id, col, row });
   }
 
   /**
@@ -528,10 +560,50 @@ class GameImpl implements Game {
   }
 
   /**
+   * Ages every mine and detonates the triggered ones. A blast covering the tile
+   * sets a mine off whatever its phase; from the armed phase on, so does any
+   * alive player standing on it, the owner included. The detonation burns the
+   * mine's own tile only, through the usual explosion cell, so the burning,
+   * death and powerup rules that run after it need no special case.
+   */
+  private tickMines(events: GameEvent[]): void {
+    const s = this.state;
+    if (s.mines.length === 0) return;
+    const burning = new Set(s.explosions.map((c) => tileKey(c.col, c.row)));
+    const detonated: Mine[] = [];
+    for (const mine of s.mines) {
+      mine.ticks++;
+      const triggered =
+        burning.has(tileKey(mine.col, mine.row)) ||
+        (minePhase(mine.ticks) > 0 &&
+          s.players.some(
+            (p) => p.alive && Math.round(p.x) === mine.col && Math.round(p.y) === mine.row,
+          ));
+      if (triggered) detonated.push(mine);
+    }
+    if (detonated.length === 0) return;
+
+    const gone = new Set(detonated);
+    s.mines = s.mines.filter((m) => !gone.has(m));
+    for (const mine of detonated) {
+      events.push({
+        type: 'mineExploded',
+        mineId: mine.id,
+        ownerId: mine.ownerId,
+        col: mine.col,
+        row: mine.row,
+      });
+      const existing = s.explosions.find((c) => c.col === mine.col && c.row === mine.row);
+      if (existing) existing.ticksLeft = EXPLOSION_DURATION_TICKS;
+      else s.explosions.push({ col: mine.col, row: mine.row, ticksLeft: EXPLOSION_DURATION_TICKS });
+    }
+  }
+
+  /**
    * Sudden death: from SUDDEN_DEATH_START_TICKS on, one tile per interval is
    * converted to HardBlock following SHRINK_ORDER. A bomb caught on the tile
-   * is crushed (its slot returned to the owner, it never detonates), a
-   * powerup is destroyed, and a player standing there dies. Explosion cells
+   * is crushed (its slot returned to the owner, it never detonates), a mine or
+   * a powerup is destroyed, and a player standing there dies. Explosion cells
    * are left alone — they expire naturally. A bomb whose fuse ends this very
    * tick still detonates first (detonation runs before the shrink).
    */
@@ -553,6 +625,7 @@ class GameImpl implements Game {
       if (owner) owner.activeBombs--;
     }
     s.bombs = s.bombs.filter((b) => b.col !== col || b.row !== row);
+    s.mines = s.mines.filter((m) => m.col !== col || m.row !== row);
     s.powerups = s.powerups.filter((p) => p.col !== col || p.row !== row);
 
     for (const player of s.players) {

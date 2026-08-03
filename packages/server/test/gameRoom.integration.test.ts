@@ -329,6 +329,7 @@ describe('create/join/start/move flow', () => {
       const me = room.sim.state.players.find((p: { id: string }) => p.id === 'p0');
       me.gunAmmo = 2;
       me.hammerUses = 3;
+      me.mineAmmo = 2;
       me.facing = 'left';
       await until(
         () => host.state.players.get('p0').gunAmmo === 2 && host.state.players.get('p0').facing === 'left',
@@ -336,6 +337,7 @@ describe('create/join/start/move flow', () => {
         'skills mirrored to schema',
       );
       expect(host.state.players.get('p0').hammerUses).toBe(3);
+      expect(host.state.players.get('p0').mineAmmo).toBe(2);
 
       for (const p of room.sim.state.players) {
         if (p.id !== 'p0') {
@@ -350,6 +352,7 @@ describe('create/join/start/move flow', () => {
       const p0 = host.state.players.get('p0');
       expect(p0.gunAmmo).toBe(0);
       expect(p0.hammerUses).toBe(0);
+      expect(p0.mineAmmo).toBe(0);
       expect(p0.facing).toBe('down');
     } finally {
       await host.leave();
@@ -420,6 +423,29 @@ describe('create/join/start/move flow', () => {
       await until(() => guest.state.phase === 'lobby', 3000, 'promoted host continued to lobby');
     } finally {
       await guest.leave();
+    }
+  });
+
+  it('syncs a mine placed through the input message', async () => {
+    const host: AnyRoom = await new Client(wsUrl).create('game', { nickname: 'Sapper' });
+    try {
+      await until(() => host.state?.code?.length === 4, 3000, 'state ready');
+      host.send('start'); // fillBots on
+      await until(() => host.state.phase === 'playing', 3000, 'playing');
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const room = matchMaker.getLocalRoomById(host.roomId) as any;
+      room.sim.state.players.find((p: { id: string }) => p.id === 'p0').mineAmmo = 2;
+      await until(() => host.state.players.get('p0').mineAmmo === 2, 3000, 'ammo mirrored');
+
+      host.send('input', { seq: 1, direction: null, placeBomb: false, placeMine: true });
+      await until(() => host.state.mines.size === 1, 3000, 'mine visible');
+      const mine = [...host.state.mines.values()][0];
+      expect(mine.ownerId).toBe('p0');
+      expect(mine.phase).toBe(0); // inert for the first 3s
+      expect(host.state.players.get('p0').mineAmmo).toBe(1);
+    } finally {
+      await host.leave();
     }
   });
 

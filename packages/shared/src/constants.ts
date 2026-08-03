@@ -21,14 +21,14 @@ export const MAX_BLAST_RADIUS = 8;
 
 export const SOFT_BLOCK_DENSITY = 0.75; // fraction of eligible floor tiles that become soft blocks
 export const POWERUP_DROP_CHANCE = 0.5;
-export const POWERUP_TYPE_COUNT = 6;
+export const POWERUP_TYPE_COUNT = 7;
 
 /**
  * Relative drop weights per PowerupType, in enum order
- * (ExtraBomb, BiggerBlast, Speed, Kick, Gun, Hammer).
- * Bomb count and blast radius are the common drops; gun and hammer are rare.
+ * (ExtraBomb, BiggerBlast, Speed, Kick, Gun, Hammer, Mine).
+ * Bomb count and blast radius are the common drops; the weapons are rare.
  */
-export const POWERUP_WEIGHTS = [6, 6, 3, 3, 1, 1] as const;
+export const POWERUP_WEIGHTS = [6, 6, 3, 3, 1, 1, 1] as const;
 export const POWERUP_WEIGHT_TOTAL = POWERUP_WEIGHTS.reduce((sum, w) => sum + w, 0);
 
 /** Maps a [0, 1) roll to a PowerupType index using POWERUP_WEIGHTS. One roll, so RNG use is unchanged. */
@@ -60,7 +60,18 @@ export const ICE_TURN_DELAY_TICKS = 3;
 
 export const GUN_AMMO_PER_PICKUP = 2;
 export const HAMMER_USES_PER_PICKUP = 3;
+export const MINE_AMMO_PER_PICKUP = 2;
 export const SKILL_ACTION_COOLDOWN_TICKS = 6; // shared gun/hammer cooldown
+
+/** Mine lifetime, counted from placement: 3s inert, then 7s armed, then buried. */
+export const MINE_ARM_TICKS = 60;
+export const MINE_BURY_TICKS = 200;
+
+/** A mine's phase from its age: 0 inert (harmless), 1 armed, 2 buried. */
+export function minePhase(ticks: number): 0 | 1 | 2 {
+  if (ticks < MINE_ARM_TICKS) return 0;
+  return ticks < MINE_BURY_TICKS ? 1 : 2;
+}
 
 // Bot combat nerf: when a weapon is off cooldown and an enemy is lined up, the
 // bot only attacks this fraction of ticks (rolls its rng, else holds fire for a

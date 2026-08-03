@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createGame } from '@bomberman/shared';
+import { MINE_ARM_TICKS, MINE_BURY_TICKS, createGame } from '@bomberman/shared';
 import { PlayerSchema, RoomState, copySimToSchema } from '../src/rooms/schema';
 
 function makeRoomState(playerIds: string[]): RoomState {
@@ -41,11 +41,13 @@ describe('copySimToSchema', () => {
     const state = makeRoomState(['p0', 'p1']);
     game.state.players[0].gunAmmo = 2;
     game.state.players[0].hammerUses = 3;
+    game.state.players[0].mineAmmo = 1;
     game.state.players[0].facing = 'left';
     copySimToSchema(game.state, state);
     const p0 = state.players.get('p0')!;
     expect(p0.gunAmmo).toBe(2);
     expect(p0.hammerUses).toBe(3);
+    expect(p0.mineAmmo).toBe(1);
     expect(p0.facing).toBe('left');
   });
 
@@ -53,6 +55,7 @@ describe('copySimToSchema', () => {
     const p = new PlayerSchema();
     expect(p.gunAmmo).toBe(0);
     expect(p.hammerUses).toBe(0);
+    expect(p.mineAmmo).toBe(0);
     expect(p.facing).toBe('down');
   });
 
@@ -161,6 +164,58 @@ describe('copySimToSchema', () => {
     expect(state.explosions[0].col).toBe(game.state.explosions[0].col);
     expect(state.explosions[0].row).toBe(game.state.explosions[0].row);
     expect(state.explosions[0].ticksLeft).toBe(game.state.explosions[0].ticksLeft);
+  });
+
+  it('mirrors a placed mine by id, inert at first', () => {
+    const game = createGame({ seed: 42, playerIds: ['p0', 'p1'] });
+    const state = makeRoomState(['p0', 'p1']);
+    game.state.players[0].mineAmmo = 2;
+    game.tick({ p0: { direction: null, placeBomb: false, placeMine: true } });
+    copySimToSchema(game.state, state);
+
+    expect(state.mines.size).toBe(1);
+    const simMine = game.state.mines[0];
+    const mine = state.mines.get(String(simMine.id))!;
+    expect(mine.id).toBe(simMine.id);
+    expect(mine.col).toBe(simMine.col);
+    expect(mine.row).toBe(simMine.row);
+    expect(mine.ownerId).toBe('p0');
+    expect(mine.phase).toBe(0);
+    expect(state.players.get('p0')!.mineAmmo).toBe(1);
+  });
+
+  it('flips the mine phase in place at the arm and bury boundaries', () => {
+    const game = createGame({ seed: 42, playerIds: ['p0', 'p1'] });
+    const state = makeRoomState(['p0', 'p1']);
+    game.state.mines.push({ id: 9, col: 5, row: 5, ownerId: 'p0', ticks: 0 });
+    copySimToSchema(game.state, state);
+    const instance = state.mines.get('9')!;
+    expect(instance.phase).toBe(0);
+
+    game.state.mines[0].ticks = MINE_ARM_TICKS - 1;
+    copySimToSchema(game.state, state);
+    expect(instance.phase).toBe(0);
+
+    game.state.mines[0].ticks = MINE_ARM_TICKS;
+    copySimToSchema(game.state, state);
+    expect(state.mines.get('9')).toBe(instance); // same schema object, delta-friendly
+    expect(instance.phase).toBe(1);
+
+    game.state.mines[0].ticks = MINE_BURY_TICKS;
+    copySimToSchema(game.state, state);
+    expect(instance.phase).toBe(2);
+  });
+
+  it('removes mines that detonated', () => {
+    const game = createGame({ seed: 42, playerIds: ['p0', 'p1'] });
+    const state = makeRoomState(['p0', 'p1']);
+    game.state.mines.push({ id: 9, col: 5, row: 5, ownerId: 'p0', ticks: 0 });
+    copySimToSchema(game.state, state);
+    expect(state.mines.size).toBe(1);
+
+    game.state.mines = [];
+    copySimToSchema(game.state, state);
+    expect(state.mines.size).toBe(0);
   });
 
   it('mirrors powerups', () => {

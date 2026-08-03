@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { parseAtlas } from '../atlasParser';
-import { ATLAS_PAGES, ATLAS_URL } from '../textures';
+import { ATLAS_PAGES, ATLAS_URL, MINE_FRAMES, MINE_PAGE } from '../textures';
 
 const ATLAS_TEXT_KEY = 'gameplay-atlas';
 
@@ -15,6 +15,7 @@ export class BootScene extends Phaser.Scene {
 
   preload(): void {
     for (const page of ATLAS_PAGES) this.load.image(page, `assets/${page}.png`);
+    this.load.image(MINE_PAGE, `assets/${MINE_PAGE}.png`);
     this.load.text(ATLAS_TEXT_KEY, ATLAS_URL);
   }
 
@@ -23,6 +24,10 @@ export class BootScene extends Phaser.Scene {
     for (const region of parseAtlas(atlasText)) {
       const pageKey = region.page.replace(/\.png$/, '');
       this.textures.get(pageKey).add(region.name, 0, region.x, region.y, region.w, region.h);
+    }
+    // The mine sheet ships no descriptor: its three frames are hand-measured.
+    for (const [name, x, y, w, h] of MINE_FRAMES) {
+      this.textures.get(MINE_PAGE).add(name, 0, x, y, w, h);
     }
     this.scene.start('Menu');
   }

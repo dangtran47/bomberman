@@ -25,6 +25,19 @@ export const ATLAS_PAGES = [
 /** URL of the libGDX atlas descriptor (served from public/assets). */
 export const ATLAS_URL = 'assets/gameplay.atlas';
 
+/** Standalone page (not in the atlas): the three stacked mine frames. */
+export const MINE_PAGE = 'mine';
+/**
+ * Frame rects inside `assets/mine.png`, measured from each drawing's alpha
+ * bounding box. The three drawings are rendered at slightly different sizes, so
+ * every frame is scaled by its own source height (see SPRITE_SIZE.mineHeight).
+ */
+export const MINE_FRAMES: [name: string, x: number, y: number, w: number, h: number][] = [
+  ['dull', 80, 41, 765, 528],
+  ['lit', 47, 647, 832, 577],
+  ['dot', 323, 1320, 280, 222],
+];
+
 /** A texture reference: atlas page key + named frame registered on it. */
 export interface TexRef {
   key: string;
@@ -68,6 +81,12 @@ export const TEX = {
     { key: G2, frame: 'tile_green' },
   ],
   bomb: { key: G1, frame: 'bomb' },
+  /** Mine phases: inert body, lit body (armed blink), red dot alone (buried). */
+  mine: {
+    dull: { key: MINE_PAGE, frame: 'dull' },
+    lit: { key: MINE_PAGE, frame: 'lit' },
+    dot: { key: MINE_PAGE, frame: 'dot' },
+  },
   explosion: { key: G1, frame: 'pom_yellow' },
   /** Bomb-origin explosion cell gets the pink pom for a distinct core. */
   explosionCenter: { key: G1, frame: 'pom_pink' },
@@ -78,6 +97,7 @@ export const TEX = {
     [PowerupType.Kick]: { key: G6, frame: 'boots' },
     [PowerupType.Gun]: { key: G7, frame: 'winter_gun' },
     [PowerupType.Hammer]: { key: G7, frame: 'winter_hammer' },
+    [PowerupType.Mine]: { key: MINE_PAGE, frame: 'dull' },
   } as Record<PowerupType, TexRef>,
   /**
    * Winter theme. All blocks are flat 64x64 square tiles (no overhang):
@@ -125,6 +145,14 @@ export const SPRITE_SIZE = {
   /** Players scale by height, anchored bottom-center at the tile bottom. */
   playerHeight: 44,
   bombHeight: 40,
+  /**
+   * Mines lie flat on the tile, so they read as a wide low disc: 32px tall is
+   * ~46px wide, filling the tile without spilling onto its neighbours. Both body
+   * frames scale to this height so the armed blink swaps art, not size.
+   */
+  mineHeight: 32,
+  /** Buried mine's red dot, in proportion to the button on the body frames. */
+  mineDotHeight: 12,
   powerupHeight: 36,
   /** Menu title logo, scaled by width. */
   titleWidth: 540,

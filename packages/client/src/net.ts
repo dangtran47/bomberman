@@ -34,6 +34,7 @@ export interface NetPlayer {
   kickTicks: number;
   gunAmmo: number;
   hammerUses: number;
+  mineAmmo: number;
   /** Last requested direction; aims the gun tracer and hammer flash. */
   facing: Direction;
   wins: number;
@@ -54,6 +55,15 @@ export interface NetBomb {
   fuseTicks: number;
   blastRadius: number;
   slideInterval: number;
+}
+
+export interface NetMine {
+  id: number;
+  col: number;
+  row: number;
+  ownerId: string;
+  /** 0 inert, 1 armed, 2 buried; the only field that ever changes. */
+  phase: number;
 }
 
 export interface NetExplosion {
@@ -83,6 +93,7 @@ export interface NetRoomState {
   arenaShrunk: NetArray<number>;
   players: NetMap<NetPlayer>;
   bombs: NetMap<NetBomb>;
+  mines: NetMap<NetMine>;
   explosions: NetArray<NetExplosion>;
   powerups: NetArray<NetPowerup>;
   winnerId: string;

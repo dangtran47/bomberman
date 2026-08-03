@@ -11,6 +11,7 @@ export enum PowerupType {
   Kick,
   Gun,
   Hammer,
+  Mine, // append only: the wire protocol sends these values
 }
 
 export type Direction = 'up' | 'down' | 'left' | 'right';
@@ -20,6 +21,7 @@ export interface PlayerInput {
   placeBomb: boolean;
   fireGun?: boolean; // optional: sources that never use the skills omit these
   swingHammer?: boolean;
+  placeMine?: boolean;
   pingMs?: number; // round-trip time reported by the client; absent for bots/offline
 }
 
@@ -36,6 +38,7 @@ export interface Player {
   kickTicks: number; // 0 = no kick
   gunAmmo: number; // shots left, 0 = no gun
   hammerUses: number; // swings left, 0 = no hammer
+  mineAmmo: number; // mines left to place, 0 = no mine
   actionCooldown: number; // ticks until the next gun/hammer use is allowed
   triggerHeld: boolean; // placeBomb held last tick, so skills fire on the press only
   skillTriggerHeld: boolean; // this press already served a skill; no bomb until it is released
@@ -59,6 +62,15 @@ export interface Bomb {
   slideDR: number;
   slideCooldown: number;
   slideInterval: number; // ticks per tile-step for this bomb; 0 until kicked
+}
+
+/** Walkable and immobile: mines never block a tile, never slide and never expire. */
+export interface Mine {
+  id: number;
+  col: number;
+  row: number;
+  ownerId: string;
+  ticks: number; // age since placement; drives minePhase
 }
 
 export interface ExplosionCell {

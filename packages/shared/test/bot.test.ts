@@ -7,6 +7,7 @@ import {
   GRID_WIDTH,
   GUN_AMMO_PER_PICKUP,
   HAMMER_USES_PER_PICKUP,
+  MINE_ARM_TICKS,
 } from '../src/constants';
 import { createGame } from '../src/game';
 import type { Game, GameEvent } from '../src/game';
@@ -188,6 +189,41 @@ describe('createBot', () => {
     expect(ofType(events, 'hammerSwung').length).toBeGreaterThanOrEqual(2);
     expect(player(game, 'bot').hammerUses).toBe(0);
     expect(ofType(events, 'bombPlaced').length).toBeGreaterThanOrEqual(1);
+    expect(player(game, 'bot').alive).toBe(true);
+  });
+
+  it('refuses to walk onto an armed mine, even to reach a powerup behind it', () => {
+    // One-tile corridor: (0,0)..(4,0), armed mine at (2,0), powerup at (4,0).
+    const grid = Array.from({ length: GRID_HEIGHT }, () =>
+      Array<TileType>(GRID_WIDTH).fill(TileType.HardBlock),
+    );
+    for (let col = 0; col <= 4; col++) grid[0][col] = TileType.Floor;
+    const game = createGame({ seed: 1, playerIds: ['bot', 'p2'], grid });
+    game.state.mines.push({ id: 1, col: 2, row: 0, ownerId: 'p2', ticks: MINE_ARM_TICKS });
+    game.state.powerups.push({ col: 4, row: 0, type: PowerupType.ExtraBomb });
+    const bot = createBot('bot', createRng(8));
+
+    const me = player(game, 'bot');
+    for (let i = 0; i < 200; i++) {
+      game.tick({ bot: bot.computeInput(game.state) });
+      expect(Math.round(me.x)).toBeLessThan(2);
+    }
+    expect(me.alive).toBe(true);
+    expect(game.state.mines).toHaveLength(1); // never stepped on it
+  });
+
+  it('steps off the mine it just dropped instead of waiting for it to arm', () => {
+    const grid = openGrid();
+    grid[0][1] = TileType.SoftBlock; // gives the bot a reason to use its charge here
+    const game = createGame({ seed: 1, playerIds: ['bot', 'p2'], grid });
+    player(game, 'bot').mineAmmo = 1;
+    const bot = createBot('bot', createRng(4));
+
+    const events = runBots(game, { bot }, 200);
+
+    expect(ofType(events, 'minePlaced')).toHaveLength(1);
+    expect(ofType(events, 'mineExploded')).toHaveLength(0);
+    expect(game.state.mines).toHaveLength(1);
     expect(player(game, 'bot').alive).toBe(true);
   });
 

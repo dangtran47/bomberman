@@ -25,6 +25,12 @@ const SKILLS: { type: PowerupType; name: string; effect: string; key?: string }[
     effect: '3 swings — smashes the tile ahead, sets off a bomb',
     key: SKILL_KEY_LABEL,
   },
+  {
+    type: PowerupType.Mine,
+    name: 'Mine',
+    effect: '2 mines — arms after 3s, then burns whoever steps on it',
+    key: SKILL_KEY_LABEL,
+  },
 ];
 
 const ICON_SIZE = 24;
