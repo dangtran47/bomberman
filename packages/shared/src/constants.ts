@@ -63,9 +63,9 @@ export const HAMMER_USES_PER_PICKUP = 3;
 export const MINE_AMMO_PER_PICKUP = 2;
 export const SKILL_ACTION_COOLDOWN_TICKS = 6; // shared gun/hammer cooldown
 
-/** Mine lifetime, counted from placement: 3s inert, then 7s armed, then buried. */
-export const MINE_ARM_TICKS = 60;
-export const MINE_BURY_TICKS = 200;
+/** Mine lifetime, counted from placement: 2s inert, then 3s armed, then buried. */
+export const MINE_ARM_TICKS = 40;
+export const MINE_BURY_TICKS = 100;
 
 /** A mine's phase from its age: 0 inert (harmless), 1 armed, 2 buried. */
 export function minePhase(ticks: number): 0 | 1 | 2 {

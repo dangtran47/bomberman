@@ -6,14 +6,14 @@ Status: Approved by user (trigger/timeline/acquisition/blast choices confirmed)
 ## Summary
 
 A new placeable weapon: the proximity mine. A player with the Mine skill places a mine on
-their tile. The mine arms after 3 seconds, then buries itself 7 seconds after arming,
+their tile. The mine arms after 2 seconds, then buries itself 3 seconds after arming,
 becoming fully invisible. Any player (including the owner) who steps on an armed or
 buried mine detonates it, burning that single tile.
 
 ## User-approved decisions
 
 - **Trigger**: step-on, anyone including the owner.
-- **Timeline**: measured from arming — 0–3s inert, 3–10s armed (flashing), 10s+ buried.
+- **Timeline**: measured from placement — 0–2s inert, 2–5s armed (flashing), 5s+ buried.
 - **Acquisition**: new Mine powerup skill (like Gun/Hammer), grants 2 mines.
 - **Blast**: single tile only (no cross rays).
 
@@ -21,8 +21,8 @@ buried mine detonates it, burning that single tile.
 
 - New `Mine` entity: `{ id, col, row, ownerId, ticks }`. Stored in its own collection —
   mines never slide, never block movement (they must be walkable), and have no fuse.
-- Constants (20 ticks/sec): `MINE_ARM_TICKS = 60` (3s), `MINE_BURY_TICKS = 200`
-  (arm + 7s). Mines never expire; they persist until triggered or match end.
+- Constants (20 ticks/sec): `MINE_ARM_TICKS = 40` (2s), `MINE_BURY_TICKS = 100`
+  (arm + 3s). Mines never expire; they persist until triggered or match end.
 - Phases derived from `ticks`: inert (< 60), armed (60–199), buried (>= 200).
 - Placement: `placeMine` when the input requests it, the player holds the Mine skill with
   ammo remaining, and the tile has no existing mine or bomb. Decrements `mineAmmo`.

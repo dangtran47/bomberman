@@ -61,7 +61,7 @@ function mine(col: number, row: number, ticks: number, ownerId = 'p2'): Mine {
 
 describe('minePhase', () => {
   it('switches phase exactly on the arm and bury boundaries', () => {
-    expect([MINE_ARM_TICKS, MINE_BURY_TICKS]).toEqual([60, 200]);
+    expect([MINE_ARM_TICKS, MINE_BURY_TICKS]).toEqual([40, 100]);
     expect(minePhase(0)).toBe(0);
     expect(minePhase(MINE_ARM_TICKS - 1)).toBe(0);
     expect(minePhase(MINE_ARM_TICKS)).toBe(1);
