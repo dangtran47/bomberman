@@ -100,7 +100,7 @@ export class MenuScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.add
-      .text(cx, 560, 'Move: Arrows/WASD  Bomb: Space  Gun: E  Hammer: Q', {
+      .text(cx, 560, 'Move: Arrows/WASD  Bomb/Gun/Hammer: Space', {
         fontFamily: 'monospace',
         fontSize: '18px',
         color: '#999999',

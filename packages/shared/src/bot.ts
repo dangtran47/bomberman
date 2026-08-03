@@ -12,12 +12,14 @@ import type { Direction, PlayerInput } from './types';
 
 export interface Bot {
   /**
-   * Computes this tick's input from the current state. Stateless between
-   * ticks — everything is recomputed from the state each call; the only side
-   * effect is consuming the injected rng when the idle rule picks a random
-   * direction. Same state sequence + same-seeded rng => identical inputs.
+   * Computes this tick's input from the current state. Deterministic: the
+   * only cross-tick memory is the current dig target (dropped as soon as it
+   * stops qualifying) and the injected rng consumed by the idle rule, so the
+   * same state sequence + same-seeded rng => identical inputs.
    */
   computeInput(state: GameState): PlayerInput;
+  /** Which rule produced the last input (diagnostics; e.g. 'flee', 'dig>3,7'). */
+  readonly lastRule?: string;
 }
 
 /** BFS depth limit for the powerup-collection rule. */
@@ -87,6 +89,14 @@ function buildContext(state: GameState): BotContext {
   for (const bomb of state.bombs) bombTiles.add(key(bomb.col, bomb.row));
   const burning = new Set<number>();
   for (const cell of state.explosions) burning.add(key(cell.col, cell.row));
+  // A live (armed or buried) mine kills on contact, exactly like standing in
+  // an explosion — it goes into `burning`, the set every flood uses as a hard
+  // transit block. Leaving it only in `danger` let flee() and the escape
+  // check route straight across armed mines "temporarily", which is how bots
+  // died pacing around their own minefields.
+  for (const mine of state.mines) {
+    if (mine.ticks >= MINE_ARM_TICKS) burning.add(key(mine.col, mine.row));
+  }
   const danger = new Set<number>(burning);
   for (const bomb of state.bombs) {
     forEachBlastCell(state, bombTiles, bomb.col, bomb.row, bomb.blastRadius, (c, r) =>
@@ -196,14 +206,24 @@ function computeDangerTimes(ctx: BotContext): Map<number, number> {
  * Survive rule: path to the nearest safe tile, transiting future-blast tiles
  * if needed but never active explosions. If nothing safe is reachable, head
  * for the reachable tile whose earliest threatening detonation is furthest
- * away (best effort), else stand still.
+ * away (best effort), else stand still. Returns the chosen safe tile so the
+ * caller can stick with it across ticks instead of re-picking (equidistant
+ * safe tiles flip sides as the bot moves, which danced it in place inside a
+ * blast zone).
  */
-function flee(ctx: BotContext, col: number, row: number): PlayerInput {
+function flee(
+  ctx: BotContext,
+  col: number,
+  row: number,
+): { input: PlayerInput; goal: { col: number; row: number } | null } {
   const blockBurning = (c: number, r: number) => ctx.burning.has(key(c, r));
   const nodes = flood(ctx, col, row, blockBurning);
   for (let i = 0; i < nodes.length; i++) {
     if (!ctx.danger.has(key(nodes[i].col, nodes[i].row))) {
-      return { direction: firstStep(nodes, i), placeBomb: false };
+      return {
+        input: { direction: firstStep(nodes, i), placeBomb: false },
+        goal: { col: nodes[i].col, row: nodes[i].row },
+      };
     }
   }
   const times = computeDangerTimes(ctx);
@@ -216,8 +236,8 @@ function flee(ctx: BotContext, col: number, row: number): PlayerInput {
       bestTime = t;
     }
   }
-  if (best === 0) return { direction: null, placeBomb: false };
-  return { direction: firstStep(nodes, best), placeBomb: false };
+  if (best === 0) return { input: { direction: null, placeBomb: false }, goal: null };
+  return { input: { direction: firstStep(nodes, best), placeBomb: false }, goal: null };
 }
 
 /** Would a bomb dropped at (col,row) with this radius hit a soft block or an enemy? */
@@ -331,10 +351,37 @@ function useSkill(
  * Math.random, so identical states and rng seeds yield identical inputs.
  */
 export function createBot(playerId: string, rng: () => number): Bot {
+  /**
+   * Remembered dig/attack spot from the last decision. Re-planning from
+   * scratch every tick is unstable: one step toward a target moves the BFS
+   * start tile, the fixed tie-break order then prefers an equidistant spot on
+   * the other side, and the bot walks back — an oscillation that keeps it
+   * pacing between frontiers without ever standing on a bomb spot (in-browser
+   * matches stalled exactly this way). The target is kept only while it still
+   * qualifies (reachable, hits something, escapable), so this stays
+   * deterministic: same state sequence + same rng still yields the same
+   * inputs.
+   */
+  let digTarget: { col: number; row: number } | null = null;
+  /** Sticky flee destination — re-picking every tick danced bots inside blasts. */
+  let fleeTarget: { col: number; row: number } | null = null;
+  /** Sticky powerup destination, kept while the powerup is still there. */
+  let collectTarget: { col: number; row: number } | null = null;
+  /** Idle heading, held until blocked/unsafe — a fresh random pick per tick
+   * jiggled the bot one cell up/down forever. */
+  let roamDir: Direction | null = null;
+  let lastRule = '';
+  const out = (rule: string, input: PlayerInput): PlayerInput => {
+    lastRule = rule;
+    return input;
+  };
   return {
+    get lastRule() {
+      return lastRule;
+    },
     computeInput(state: GameState): PlayerInput {
       const me = state.players.find((p) => p.id === playerId);
-      if (!me || !me.alive) return { direction: null, placeBomb: false };
+      if (!me || !me.alive) return out('dead', { direction: null, placeBomb: false });
 
       const col = Math.round(me.x);
       const row = Math.round(me.y);
@@ -342,21 +389,83 @@ export function createBot(playerId: string, rng: () => number): Bot {
       const blockUnsafe = (c: number, r: number) =>
         ctx.burning.has(key(c, r)) || ctx.danger.has(key(c, r));
 
-      // 1. Survive: current tile is threatened -> get out.
-      if (ctx.danger.has(key(col, row))) return flee(ctx, col, row);
+      // 1. Survive: current tile is threatened -> get out. Stick with the safe
+      // tile chosen on the first threatened tick while it stays safe and
+      // reachable; equidistant safe tiles otherwise flip sides as the bot
+      // moves and it dances one cell back and forth inside the blast.
+      if (ctx.danger.has(key(col, row))) {
+        if (fleeTarget !== null) {
+          const t = fleeTarget;
+          if (!ctx.danger.has(key(t.col, t.row))) {
+            const blockBurning = (c: number, r: number) => ctx.burning.has(key(c, r));
+            const nodes = flood(ctx, col, row, blockBurning);
+            const idx = nodes.findIndex((n) => n.col === t.col && n.row === t.row);
+            if (idx > 0) {
+              return out(`flee>${t.col},${t.row}`, {
+                direction: firstStep(nodes, idx),
+                placeBomb: false,
+              });
+            }
+          }
+          fleeTarget = null;
+        }
+        const fled = flee(ctx, col, row);
+        fleeTarget = fled.goal;
+        return out('flee', fled.input);
+      }
+      fleeTarget = null; // safe again: next threat plans fresh
 
       // 2. Collect: nearest powerup reachable via safe tiles within 8 steps.
+      // Sticky for the same reason as fleeing — two powerups at similar
+      // distance must not alternate as the rounded position shifts.
       if (state.powerups.length > 0) {
         const nodes = flood(ctx, col, row, blockUnsafe, POWERUP_SEARCH_DEPTH);
+        if (collectTarget !== null) {
+          const t = collectTarget;
+          const still = state.powerups.some((p) => p.col === t.col && p.row === t.row);
+          const idx = still ? nodes.findIndex((n) => n.col === t.col && n.row === t.row) : -1;
+          if (idx > 0) {
+            return out(`collect>${t.col},${t.row}`, {
+              direction: firstStep(nodes, idx),
+              placeBomb: false,
+            });
+          }
+          collectTarget = null; // taken, unreachable, or we are standing on it
+        }
         const goal = nodes.findIndex((n) =>
           state.powerups.some((p) => p.col === n.col && p.row === n.row),
         );
-        if (goal > 0) return { direction: firstStep(nodes, goal), placeBomb: false };
+        if (goal > 0) {
+          collectTarget = { col: nodes[goal].col, row: nodes[goal].row };
+          return out('collect', { direction: firstStep(nodes, goal), placeBomb: false });
+        }
       }
 
       const enemyTiles = new Set<number>();
       for (const p of state.players) {
         if (p.id !== playerId && p.alive) enemyTiles.add(key(Math.round(p.x), Math.round(p.y)));
+      }
+
+      // 2.5 Unload mines. Held mine ammo hijacks the trigger server-side
+      // (game.ts: `armed` includes mineAmmo), so no bomb can be placed until
+      // the mines are gone — a bot that "places a bomb" while holding mines
+      // actually drops a mine at its feet and then wonders why nothing
+      // explodes. Drop them deliberately instead: current tile, when it is
+      // mine- and bomb-free and a safe neighbor exists to step off to (the
+      // mine only ever threatens its own tile). The tile joins the danger set
+      // next tick, so rule 1 walks the bot off before the mine arms (3s).
+      if (me.mineAmmo > 0) {
+        const tileFree = !ctx.bombTiles.has(key(col, row)) && !state.mines.some((m) => m.col === col && m.row === row);
+        const canStepOff = NEIGHBOR_STEPS.some(({ dc, dr }) => {
+          const c = col + dc;
+          const r = row + dr;
+          return isPassable(ctx, c, r) && !blockUnsafe(c, r);
+        });
+        if (tileFree && canStepOff) {
+          return out('mine:dump', { direction: null, placeBomb: false, placeMine: true });
+        }
+        // Bad spot (own bomb underfoot, mine already here, or no way off):
+        // fall through — the walk rules move the bot and it retries elsewhere.
       }
 
       // 3. Attack/dig. A held gun or hammer takes over the trigger, so no bomb
@@ -374,36 +483,80 @@ export function createBot(playerId: string, rng: () => number): Bot {
           blockUnsafe,
           rng,
         );
-        if (action) return action;
+        if (action) return out(`skill:${weapon}`, action);
         // No target reachable: fall through to idle (never placeBomb, which
         // would burn a swing at whatever the bot happens to be facing).
       } else {
         // Nearest safe-reachable tile whose bomb would hit a soft block or an
-        // enemy; place only if an escape route survives it.
+        // enemy AND that leaves an escape route. Spots without one are skipped
+        // rather than given up on: taking only the nearest hit-tile stranded a
+        // bot whose own tile qualified but was too tight to survive — it fell
+        // through to idle and paced there forever, while a tile or two away sat
+        // a spot it could have bombed from. Checking the escape before walking
+        // also stops the bot from committing to a target it will refuse on
+        // arrival, which is the same pacing loop one tile wide.
         const nodes = flood(ctx, col, row, blockUnsafe);
-        const goal = nodes.findIndex((n) =>
-          bombWouldHit(ctx, me.blastRadius, n.col, n.row, enemyTiles),
-        );
-        if (goal === 0) {
-          if (me.activeBombs < me.bombCount && canEscapeOwnBomb(ctx, me.blastRadius, col, row)) {
-            return { direction: null, placeBomb: true };
+        // Stick with the remembered target while it still qualifies; only a
+        // vanished/blocked/unescapable target triggers a re-selection.
+        if (digTarget !== null) {
+          const t = digTarget;
+          const idx = nodes.findIndex((n) => n.col === t.col && n.row === t.row);
+          if (
+            idx < 0 ||
+            !bombWouldHit(ctx, me.blastRadius, t.col, t.row, enemyTiles) ||
+            !canEscapeOwnBomb(ctx, me.blastRadius, t.col, t.row)
+          ) {
+            digTarget = null;
+          } else if (idx > 0) {
+            return out(`dig>${t.col},${t.row}`, { direction: firstStep(nodes, idx), placeBomb: false });
+          } else {
+            digTarget = null; // arrived: place below (or idle if out of bombs)
+            if (me.activeBombs < me.bombCount)
+              return out('place', { direction: null, placeBomb: true });
           }
-          // Standing on the spot but placing is unsafe or capacity is used up:
-          // fall through to idle rather than freeze forever.
-        } else if (goal > 0) {
-          return { direction: firstStep(nodes, goal), placeBomb: false };
+        }
+        if (digTarget === null) {
+          for (let i = 0; i < nodes.length; i++) {
+            const node = nodes[i];
+            if (!bombWouldHit(ctx, me.blastRadius, node.col, node.row, enemyTiles)) continue;
+            if (!canEscapeOwnBomb(ctx, me.blastRadius, node.col, node.row)) continue;
+            if (i > 0) {
+              digTarget = { col: node.col, row: node.row };
+              return out(`dig+${node.col},${node.row}`, {
+                direction: firstStep(nodes, i),
+                placeBomb: false,
+              });
+            }
+            // Standing on a usable spot: place unless every bomb is already
+            // out, in which case idling until one detonates beats squatting.
+            if (me.activeBombs < me.bombCount)
+              return out('place', { direction: null, placeBomb: true });
+            break;
+          }
         }
       }
 
-      // 4. Idle: random adjacent safe tile via the injected rng, else stand still.
+      // 4. Idle: roam in a persistent direction, turning only when the tile
+      // ahead stops being safe floor. Re-rolling the direction every tick made
+      // the bot vibrate around one cell.
+      if (roamDir !== null) {
+        const step = NEIGHBOR_STEPS.find((s) => s.dir === roamDir)!;
+        const c = col + step.dc;
+        const r = row + step.dr;
+        if (isPassable(ctx, c, r) && !blockUnsafe(c, r)) {
+          return out('idle:roam', { direction: roamDir, placeBomb: false });
+        }
+        roamDir = null;
+      }
       const options: Direction[] = [];
       for (const { dc, dr, dir } of NEIGHBOR_STEPS) {
         const c = col + dc;
         const r = row + dr;
         if (isPassable(ctx, c, r) && !blockUnsafe(c, r)) options.push(dir);
       }
-      if (options.length === 0) return { direction: null, placeBomb: false };
-      return { direction: options[Math.floor(rng() * options.length)], placeBomb: false };
+      if (options.length === 0) return out('idle:stand', { direction: null, placeBomb: false });
+      roamDir = options[Math.floor(rng() * options.length)];
+      return out('idle:roam', { direction: roamDir, placeBomb: false });
     },
   };
 }

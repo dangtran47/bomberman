@@ -3,15 +3,17 @@
  * opens 4 real Chrome windows, and has each one play the game like a human —
  * real UI clicks to create/join the room, real keyboard input during the match.
  *
- * Each browser runs the full client (prediction + reconciliation against the
- * lagged server), so what you watch on screen is browser-local predicted state,
- * not the server echo. Bot decisions reuse the shared bot AI (@bomberman/shared
- * bot.ts), running *inside each page* at the sim tick rate (50ms): the driver
- * imports the shared package through vite's dev server, rebuilds a GameState
- * from the synced room state every tick, and presses/releases keys by
- * dispatching keyboard events — the same input path a human uses. Running
- * in-page (instead of polling from Node) keeps decisions fresh enough for the
- * bots to dodge bombs and survive into sudden death like they do offline.
+ * Each browser runs the full client against the lagged server; the windows
+ * render what a player would see. Bot decisions reuse the shared bot AI
+ * (@bomberman/shared bot.ts), running in THIS process at the sim tick rate
+ * (50ms) against the server's authoritative state (dev-only /debug/sim
+ * endpoint, enabled via SIM_DEBUG_STATE=1) — perfect information, like the
+ * offline bots. Each decision is then sent through that bot's own browser
+ * client (room.send, legacy seq-0 latest-wins inputs), so the netcode path
+ * under test stays fully exercised while the AI is never handicapped by
+ * patch delay. GameScene suppresses its own input sends and pins its
+ * predictor to the server state via the __botDirect dev flag (see
+ * startBotPilots for the history of in-page sensing failures this replaced).
  *
  * Usage:
  *   make simtest                # LAG=50 (round-trip ms) by default
@@ -45,6 +47,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import { SUDDEN_DEATH_START_TICKS, createBot, createRng } from '../packages/shared/src';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TSX = path.join(ROOT, 'node_modules', '.bin', 'tsx');
@@ -65,8 +68,6 @@ const AGGRO = process.env.AGGRO === '1';
 const SERVER_PORT = 2567;
 const CLIENT_PORT = 5199; // fixed, away from the usual dev 5173
 const BASE_URL = `http://localhost:${CLIENT_PORT}`;
-/** Vite serves workspace files transformed; the in-page driver imports the shared package from here. */
-const SHARED_URL = `/@fs${path.join(ROOT, 'packages/shared/src/index.ts')}`;
 
 // Canvas is 756x706 (main.ts); a matching viewport makes Scale.FIT render 1:1,
 // so menu buttons sit at their designed coordinates.
@@ -130,7 +131,13 @@ async function startInfra(): Promise<void> {
     // cwd matters: tsx must pick up the server's tsconfig (decorators).
     const server = spawn(TSX, ['src/index.ts'], {
       cwd: path.join(ROOT, 'packages/server'),
-      env: { ...process.env, SIMULATE_LATENCY_MS: String(LAG), PORT: String(SERVER_PORT) },
+      env: {
+        ...process.env,
+        SIMULATE_LATENCY_MS: String(LAG),
+        PORT: String(SERVER_PORT),
+        // Dev endpoint the bot pilots read the authoritative sim state from.
+        SIM_DEBUG_STATE: '1',
+      },
       // Server output streams into this console so the per-match [perf] lines
       // (GameRoom.logMatchPerf) land next to the client-side ping samples.
       stdio: ['ignore', 'inherit', 'inherit'],
@@ -163,6 +170,16 @@ async function launchPlayer(index: number): Promise<Page> {
     headless: HEADLESS,
     args: [
       '--mute-audio',
+      // Chrome throttles rAF and timers for unfocused/occluded windows, which
+      // kills Phaser's update loop (and with it the input-send loop) in every
+      // window but the focused one ~a minute into the match: the bot driver's
+      // setInterval keeps deciding, the synced state keeps arriving over the
+      // websocket, but no inputs go out — the server dry-holds the last
+      // direction and the player freezes mid-map (decision rings show keyed
+      // directions with a stale `facing`, i.e. nothing reaching the server).
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
       `--window-position=${col * 770},${row * 790}`,
       `--window-size=770,790`,
     ],
@@ -230,202 +247,151 @@ async function hostEnterUntilPhase(host: Page, phase: string, what: string): Pro
 }
 
 /**
- * Installs the in-page bot driver: imports the shared bot AI through vite,
- * then every 50ms rebuilds a GameState from the synced room state, asks the
- * bot for an input, and dispatches keyboard events (the client's normal input
- * path — held arrows, tapped Space/E/Q). Exposes window.__botStop().
+ * Per-match bot pilots. The brains (shared bot.ts) run HERE in the harness
+ * process against the server's authoritative sim state, fetched from the
+ * dev-only /debug/sim endpoint every 50ms — zero sensing latency, the same
+ * perfect information the offline bots enjoy. Each decision then travels
+ * through that bot's real browser client (room.send on its page), so the
+ * input path under test — websocket, simulated latency, server input queue —
+ * stays fully exercised. The pages themselves only render; window.__botDirect
+ * suppresses GameScene's own input sends and pins its predictor to the
+ * server state so every window draws players where the server has them.
+ *
+ * Earlier versions ran the brains inside each page against the SYNCED state:
+ * sensing lagged 100-450ms behind the server (patch delay, rAF throttling,
+ * input-queue backlog), and no amount of steering machinery made a per-tick
+ * re-planning brain converge on 200ms-stale information. Reading server truth
+ * is a cheat the game itself never gets, but the sim's job is to exercise the
+ * netcode, not to handicap the AI.
  */
-async function startBotDriver(page: Page, seed: number): Promise<void> {
-  await page.evaluate(
-    async ({ sharedUrl, seed, aggro }) => {
-      // tsx compiles with esbuild keepNames, which wraps inner functions in a
-      // __name(...) helper that doesn't exist in the page after serialization.
-      (globalThis as never as { __name?: unknown }).__name ??= (f: unknown) => f;
-      const w = window as never as {
-        __room?: { room: { state: any }; playerId: string };
-        __botTimer?: number;
-        __botStop?: () => void;
-      };
-      const hook = w.__room;
-      if (!hook) throw new Error('no __room hook — did the page join a room?');
-      const shared = await import(sharedUrl);
-      const bot = shared.createBot(hook.playerId, shared.createRng(seed));
-      const GRID_WIDTH: number = shared.GRID_WIDTH;
-      const TileType = shared.TileType;
+interface BotPilots {
+  rings: Map<string, unknown[]>;
+  counters: { ticks: number; errors: number; lastError: string; lastInput: string }[];
+  stop(): Promise<void>;
+}
 
-      // Base grid+ice compiled once per round (same path the sim uses).
-      let base: { key: string; grid: number[][]; ice: boolean[][] } | null = null;
-      const baseFor = (mapSeed: number, mapId: string) => {
-        const key = `${mapSeed}:${mapId}`;
-        if (base === null || base.key !== key) {
-          const def = shared.getMapDef(mapId || undefined);
-          const compiled = def ? shared.compileMap(def, mapSeed) : null;
-          const grid = compiled ? compiled.grid : shared.generateMap(mapSeed);
-          const ice = compiled ? compiled.ice : grid.map((row: number[]) => row.map(() => false));
-          base = { key, grid, ice };
-        }
-        return base;
-      };
-
-      /** Rebuilds a shared GameState from the synced net state so bot.ts can run on it. */
-      const toGameState = () => {
-        const s = hook.room.state;
-        const b = baseFor(s.seed, s.mapId);
-        const grid = b.grid.map((row) => row.slice());
-        s.destroyedBlocks.forEach((i: number) => {
-          grid[Math.floor(i / GRID_WIDTH)][i % GRID_WIDTH] = TileType.Floor;
-        });
-        s.arenaShrunk.forEach((i: number) => {
-          grid[Math.floor(i / GRID_WIDTH)][i % GRID_WIDTH] = TileType.HardBlock;
-        });
-        // Campaign mode: until sudden death, other players are presented as
-        // dead so the bot never targets them — it digs, collects, and dodges
-        // instead. Once the arena starts shrinking, everyone turns hostile.
-        const passive = !aggro && s.tick < shared.SUDDEN_DEATH_START_TICKS;
-        const players: unknown[] = [];
-        s.players.forEach((p: any, id: string) =>
-          players.push({
-            id,
-            x: p.x,
-            y: p.y,
-            alive: passive && id !== hook.playerId ? false : p.alive,
-            speed: p.speed,
-            bombCount: p.bombCount,
-            blastRadius: p.blastRadius,
-            activeBombs: p.activeBombs,
-            kickTicks: p.kickTicks,
-            gunAmmo: p.gunAmmo,
-            hammerUses: p.hammerUses,
-            // actionCooldown is not synced; 0 just makes the bot try a skill a
-            // beat early — the server enforces the real cooldown.
-            actionCooldown: 0,
-            triggerHeld: false,
-            skillTriggerHeld: false,
-            facing: p.facing,
-            momentumDir: p.momentumDir || null,
-            momentumTicks: p.momentumTicks,
-            turnTicks: p.turnTicks,
-            laneDir: p.laneDir || null,
-            turnGrace: 0,
-            deathTick: null,
-          }),
-        );
-        const bombs: unknown[] = [];
-        s.bombs.forEach((bm: any) =>
-          bombs.push({
-            id: bm.id,
-            col: bm.col,
-            row: bm.row,
-            ownerId: bm.ownerId,
-            fuseTicks: bm.fuseTicks,
-            blastRadius: bm.blastRadius,
-            slideDC: 0,
-            slideDR: 0,
-            slideCooldown: 0,
-            slideInterval: bm.slideInterval,
-          }),
-        );
-        const explosions: unknown[] = [];
-        s.explosions.forEach((e: any) => explosions.push({ col: e.col, row: e.row, ticksLeft: e.ticksLeft }));
-        const powerups: unknown[] = [];
-        s.powerups.forEach((p: any) => powerups.push({ col: p.col, row: p.row, type: p.type }));
-        return {
-          tick: s.tick,
-          grid,
-          ice: b.ice,
-          players,
-          bombs,
-          explosions,
-          powerups,
-          status: s.phase === 'finished' ? 'finished' : 'running',
-          winnerId: s.winnerId || null,
-        };
-      };
-
-      // Phaser reads event.keyCode off window key events; synthetic events
-      // need it patched on (KeyboardEventInit has no working keyCode).
-      const KEYS: Record<string, [key: string, keyCode: number, code: string]> = {
-        up: ['ArrowUp', 38, 'ArrowUp'],
-        down: ['ArrowDown', 40, 'ArrowDown'],
-        left: ['ArrowLeft', 37, 'ArrowLeft'],
-        right: ['ArrowRight', 39, 'ArrowRight'],
-        bomb: [' ', 32, 'Space'],
-        gun: ['e', 69, 'KeyE'],
-        hammer: ['q', 81, 'KeyQ'],
-      };
-      const fire = (type: string, [key, keyCode, code]: [string, number, string]) => {
-        const event = new KeyboardEvent(type, { key, code, bubbles: true });
-        Object.defineProperty(event, 'keyCode', { get: () => keyCode });
-        window.dispatchEvent(event);
-      };
-      const tap = (k: [string, number, string]) => {
-        fire('keydown', k);
-        setTimeout(() => fire('keyup', k), 60);
-      };
-      let heldDir: string | null = null;
-      const setDir = (dir: string | null) => {
-        if (heldDir === dir) return;
-        if (heldDir) fire('keyup', KEYS[heldDir]);
-        if (dir) fire('keydown', KEYS[dir]);
-        heldDir = dir;
-      };
-
-      /** Directions of the last few decisions; bombs are only placed after a
-       * standstill so the (latency-delayed) bomb lands exactly where the
-       * escape plan assumed. Moving drops are how bots kill themselves. */
-      const recentDirs: (string | null)[] = [];
-      const debug = { ticks: 0, errors: 0, lastError: '', lastInput: '' };
-      (w as never as { __botDebug: unknown }).__botDebug = debug;
-      w.__botStop = () => {
-        clearInterval(w.__botTimer);
-        setDir(null);
-      };
-      w.__botTimer = window.setInterval(() => {
-        const s = hook.room.state;
-        if (s.phase === 'finished') {
-          w.__botStop!();
-          return;
-        }
-        if (s.phase !== 'playing') return;
-        const me = s.players.get(hook.playerId);
-        if (!me || !me.alive) {
-          setDir(null);
-          return;
-        }
-        try {
-          debug.ticks++;
-          const input = bot.computeInput(toGameState());
-          // Careful bombing: the shared brain happily builds multi-bomb fields
-          // and dies in them (it does offline too). One bomb at a time, never
-          // near another ticking bomb, and only from a standstill (with input
-          // latency, a bomb dropped while moving lands a tile away from where
-          // the escape plan assumed). Together these keep bots alive deep into
-          // the round instead of dying in the first minute.
-          if (input.placeBomb) {
-            const col = Math.round(me.x);
-            const row = Math.round(me.y);
-            let crowded = false;
-            s.bombs.forEach((b: any) => {
-              if (Math.abs(b.col - col) + Math.abs(b.row - row) <= b.blastRadius + me.blastRadius + 1) crowded = true;
-            });
-            const moving = recentDirs.some((d) => d !== null);
-            if (me.activeBombs > 0 || crowded || moving) input.placeBomb = false;
-          }
-          recentDirs.push(input.direction ?? null);
-          if (recentDirs.length > 2) recentDirs.shift();
-          debug.lastInput = JSON.stringify(input);
-          setDir(input.direction);
-          if (input.placeBomb) tap(KEYS.bomb);
-          if (input.fireGun) tap(KEYS.gun);
-          if (input.swingHammer) tap(KEYS.hammer);
-        } catch (error) {
-          debug.errors++;
-          debug.lastError = error instanceof Error ? error.message : String(error);
-        }
-      }, 50);
-    },
-    { sharedUrl: SHARED_URL, seed, aggro: AGGRO },
+async function startBotPilots(
+  code: string,
+  pages: Page[],
+  playerIds: string[],
+  seed: number,
+): Promise<BotPilots> {
+  // Relay mode: scene stops sending its own (empty) inputs and mirrors the
+  // server position for the own sprite.
+  await Promise.all(
+    pages.map((p) =>
+      p.evaluate(() => {
+        (window as never as { __botDirect: boolean }).__botDirect = true;
+      }),
+    ),
   );
+
+  const bots = playerIds.map((id, i) => ({ id, bot: createBot(id, createRng(seed + i)) }));
+  const rings = new Map<string, unknown[]>(playerIds.map((id, i) => [NICKNAMES[i], []]));
+  const counters = playerIds.map(() => ({ ticks: 0, errors: 0, lastError: '', lastInput: '' }));
+  /** Last two decision directions per bot; placements only fire from rest. */
+  const recentDirs: (string | null)[][] = playerIds.map(() => []);
+  let stopped = false;
+  let inFlight = false;
+
+  const sendInput = (page: Page, msg: unknown) =>
+    page
+      .evaluate((m) => {
+        const w = window as never as {
+          __room?: { room: { send: (type: string, message: unknown) => void } };
+        };
+        w.__room?.room.send('input', m);
+      }, msg)
+      .catch(() => undefined);
+
+  const idle = { seq: 0, direction: null, placeBomb: false, pingMs: 0 };
+
+  const timer = setInterval(() => {
+    if (stopped || inFlight) return; // skip a beat rather than pile up fetches
+    inFlight = true;
+    void (async () => {
+      let snap: { phase: string; state: any } | null = null;
+      try {
+        const res = await fetch(`http://localhost:${SERVER_PORT}/debug/sim/${code}`, {
+          signal: AbortSignal.timeout(300),
+        });
+        if (res.ok) snap = (await res.json()) as { phase: string; state: any };
+      } catch {
+        /* transient — server busy or between matches */
+      }
+      inFlight = false;
+      if (stopped || snap === null) return;
+      if (snap.phase !== 'playing' || snap.state.status === 'finished') return;
+
+      const state = snap.state;
+      // Campaign mode: enemies are hidden from each bot until sudden death so
+      // matches show digging and dodging before the endgame fight.
+      const passive = !AGGRO && state.tick < SUDDEN_DEATH_START_TICKS;
+      for (let i = 0; i < bots.length; i++) {
+        const { id, bot } = bots[i];
+        const view = passive
+          ? { ...state, players: state.players.map((p: any) => (p.id === id ? p : { ...p, alive: false })) }
+          : state;
+        let input;
+        try {
+          input = bot.computeInput(view);
+        } catch (error) {
+          counters[i].errors++;
+          counters[i].lastError = error instanceof Error ? error.message : String(error);
+          continue;
+        }
+        counters[i].ticks++;
+        // Placement gate: the input still arrives 1-2 server ticks late, so a
+        // bomb or mine sent while the player is coasting can land a tile away
+        // from the plan. Only place from a standstill (this decision and the
+        // previous two all wanted no movement).
+        const rest =
+          input.direction === null &&
+          recentDirs[i].length === 2 &&
+          recentDirs[i].every((d) => d === null);
+        if ((input.placeBomb === true || input.placeMine === true) && !rest) {
+          input.placeBomb = false;
+          input.placeMine = false;
+        }
+        recentDirs[i].push(input.direction ?? null);
+        if (recentDirs[i].length > 2) recentDirs[i].shift();
+        counters[i].lastInput = JSON.stringify(input);
+
+        const me = state.players.find((p: any) => p.id === id);
+        const ring = rings.get(NICKNAMES[i])!;
+        ring.push({
+          t: state.tick,
+          x: me?.x,
+          y: me?.y,
+          d: input.direction,
+          pb: input.placeBomb,
+          pm: input.placeMine ?? false,
+          r: bot.lastRule,
+        });
+        if (ring.length > 40) ring.shift();
+
+        void sendInput(pages[i], {
+          seq: 0,
+          direction: input.direction ?? null,
+          placeBomb: input.placeBomb === true,
+          fireGun: input.fireGun === true,
+          swingHammer: input.swingHammer === true,
+          placeMine: input.placeMine === true,
+          pingMs: 0,
+        });
+      }
+    })();
+  }, 50);
+
+  return {
+    rings,
+    counters,
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      await Promise.all(pages.map((p) => sendInput(p, idle)));
+    },
+  };
 }
 
 interface RoundView {
@@ -468,41 +434,62 @@ async function pingLine(pages: Page[]): Promise<string> {
   return pings.map((ms, i) => `${NICKNAMES[i]}=${ms === null ? '--' : `${ms}ms`}`).join(' ');
 }
 
-/** DEBUG=1: per-page driver counters + own position, printed every second. */
-async function debugSample(pages: Page[]): Promise<void> {
+/** DEBUG=1: pilot counters + each page's synced vs predicted own position. */
+async function debugSample(pages: Page[], pilots: BotPilots): Promise<void> {
   for (let i = 0; i < pages.length; i++) {
     const info = await pages[i]
       .evaluate(() => {
         const w = window as never as {
           __room?: { room: { state: any }; playerId: string };
-          __botDebug?: { ticks: number; errors: number; lastError: string; lastInput: string };
+          __scene?: { predictor?: { player?: { x: number; y: number } } };
         };
-        if (!w.__room || !w.__botDebug) return null;
+        if (!w.__room) return null;
         const me = w.__room.room.state.players.get(w.__room.playerId);
+        // Predicted own position: the own window renders the sprite from this,
+        // so it diverging from the synced position means the player watches
+        // themselves in the wrong place (the __botDirect freeze bug).
+        const pp = w.__scene?.predictor?.player;
         return {
-          ...w.__botDebug,
           x: me ? Math.round(me.x * 10) / 10 : -1,
           y: me ? Math.round(me.y * 10) / 10 : -1,
+          px: pp ? Math.round(pp.x * 10) / 10 : null,
+          py: pp ? Math.round(pp.y * 10) / 10 : null,
           alive: me?.alive ?? false,
         };
       })
       .catch(() => null);
-    if (info) {
+    const c = pilots.counters[i];
+    if (info && c) {
       console.log(
-        `  [${NICKNAMES[i]}] ticks=${info.ticks} errors=${info.errors} pos=(${info.x},${info.y}) alive=${info.alive}` +
-          `${info.lastError ? ` lastError=${info.lastError}` : ''} lastInput=${info.lastInput}`,
+        `  [${NICKNAMES[i]}] ticks=${c.ticks} errors=${c.errors} pos=(${info.x},${info.y})` +
+          ` predicted=(${info.px},${info.py}) alive=${info.alive}` +
+          `${c.lastError ? ` lastError=${c.lastError}` : ''} lastInput=${c.lastInput}`,
       );
     }
   }
 }
 
+/**
+ * Stall forensics: dumps a bot's recent decisions (tick, synced position, keyed
+ * direction, bomb flag). The signature to look for is the keyed direction
+ * disagreeing with how the position actually moves — that is how both the
+ * skill-key bug and the lane-commitment oscillation were found.
+ */
+function dumpRing(pilots: BotPilots, name: string): void {
+  const ring = pilots.rings.get(name);
+  console.log(`  RING ${name}: ${JSON.stringify(ring ? ring.slice(-16) : null)}`);
+}
+
 /** Watches the round from the host's page, logging deaths and sudden death. */
-async function watchRound(host: Page, pages: Page[]): Promise<void> {
+async function watchRound(host: Page, pages: Page[], pilots: BotPilots): Promise<void> {
   const start = Date.now();
   const dead = new Set<string>();
   let suddenDeath = false;
   let lastDebug = 0;
   let lastPing = 0;
+  let lastDigCount = -1;
+  let lastDigAt = Date.now();
+  let analyzed = false;
   while (!shuttingDown) {
     let view: RoundView | null;
     try {
@@ -514,7 +501,7 @@ async function watchRound(host: Page, pages: Page[]): Promise<void> {
     const secs = Math.round((Date.now() - start) / 1000);
     if (process.env.DEBUG === '1' && Date.now() - lastDebug > 1000) {
       lastDebug = Date.now();
-      await debugSample(pages);
+      await debugSample(pages, pilots);
     }
     if (Date.now() - lastPing > 15_000) {
       lastPing = Date.now();
@@ -525,6 +512,20 @@ async function watchRound(host: Page, pages: Page[]): Promise<void> {
         dead.add(p.id);
         console.log(`  ${p.nickname} died at ${secs}s`);
       }
+    }
+    // Stall probe: no block destroyed for 25s pre-sudden-death -> dump analysis.
+    const digCount = (await roomEval<number>(host, 'hook.room.state.destroyedBlocks.length')) ?? -1;
+    if (digCount !== lastDigCount) {
+      lastDigCount = digCount;
+      lastDigAt = Date.now();
+    } else if (!analyzed && view.tick < 2400 && Date.now() - lastDigAt > 25_000) {
+      analyzed = true;
+      console.log(`  STALL: no digging for 25s at tick ${view.tick} (destroyed=${digCount})`);
+      for (const name of NICKNAMES.slice(0, pages.length)) dumpRing(pilots, name);
+      // A picture of the stalled board beats any amount of ring archaeology.
+      const shot = `/tmp/bomberman-stall-${Date.now()}.png`;
+      await pages[0].screenshot({ path: shot }).catch(() => undefined);
+      console.log(`  STALL screenshot: ${shot}`);
     }
     if (!suddenDeath && view.tick >= 2400) {
       suddenDeath = true;
@@ -594,12 +595,22 @@ async function main(): Promise<void> {
       ),
     );
 
-    // Fresh driver per match: the previous one stopped itself on 'finished',
-    // and a per-game seed keeps bot behavior from repeating verbatim.
-    await Promise.all(pages.map((p, i) => startBotDriver(p, 0xb0b + game * 100 + i)));
-    console.log(`match ${game}/${GAMES} started — LAG=${LAG}ms round-trip, in-page bots at 50ms tick`);
+    // Fresh pilots per match; a per-game seed keeps bot behavior from
+    // repeating verbatim.
+    const playerIds = await Promise.all(
+      pages.map(async (p, i) => {
+        const id = await roomEval<string>(p, 'hook.playerId');
+        if (id === null) throw new Error(`${NICKNAMES[i]} has no playerId`);
+        return id;
+      }),
+    );
+    const pilots = await startBotPilots(code, pages, playerIds, 0xb0b + game * 100);
+    console.log(
+      `match ${game}/${GAMES} started — LAG=${LAG}ms round-trip, server-truth bots at 50ms tick`,
+    );
 
-    await watchRound(host, pages);
+    await watchRound(host, pages, pilots);
+    await pilots.stop();
   }
 
   if (KEEP && !HEADLESS) {

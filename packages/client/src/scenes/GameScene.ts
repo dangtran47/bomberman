@@ -28,7 +28,7 @@ import type {
   PlayerInput,
 } from '@bomberman/shared';
 import { audio } from '../audio';
-import { GUN_KEY, HAMMER_KEY, SKILL_KEY_LABEL } from '../controls';
+import { SKILL_KEY_LABEL } from '../controls';
 import { GamepadInput } from '../gamepad';
 import { INTERP_DELAY_MS, SnapshotBuffer } from '../interpolation';
 import type { GameRoomConnection, NetPlayer, NetRoomState } from '../net';
@@ -402,11 +402,9 @@ export class GameScene extends Phaser.Scene {
   private spaceKey!: Phaser.Input.Keyboard.Key;
   /** Gamepad mirror of the direction keys + Space, polled once per frame. */
   private pad!: GamepadInput;
-  private gunKey!: Phaser.Input.Keyboard.Key;
-  private hammerKey!: Phaser.Input.Keyboard.Key;
   /**
    * Latched skill presses. A frame can run zero sim steps (or skip an input
-   * send), so an edge-triggered key is held here until it is consumed.
+   * send), so an edge-triggered press is held here until it is consumed.
    */
   private pendingGun = false;
   private pendingHammer = false;
@@ -780,7 +778,17 @@ export class GameScene extends Phaser.Scene {
 
     // Reconcile: rebase onto the server's last-applied input, replay the rest.
     const own = room.state.players.get(this.myId);
-    if (this.predictor && own && own.lastInputSeq !== this.lastAcked) {
+    // Bot-driven session (__botDirect): the scene sends no seq'd inputs, so no
+    // acks ever arrive and the reconcile below never runs — the predictor
+    // would freeze while the server moves this player, and the own window
+    // renders its sprite tiles away from where every other window (and the
+    // server) has it. Track the server state directly instead; the sub-tick
+    // render blend still smooths the patch-rate steps.
+    const botDirectView =
+      import.meta.env.DEV && (window as unknown as { __botDirect?: boolean }).__botDirect === true;
+    if (botDirectView && this.predictor && own) {
+      Object.assign(this.predictor.player, predictedFromNet(own));
+    } else if (this.predictor && own && own.lastInputSeq !== this.lastAcked) {
       const serverBombs: { col: number; row: number }[] = [];
       room.state.bombs.forEach((b) => serverBombs.push({ col: b.col, row: b.row }));
       const err = this.predictor.reconcile(
@@ -852,7 +860,14 @@ export class GameScene extends Phaser.Scene {
       this.predictor.ageBombs();
       seq = input.seq;
     }
-    if (!this.roomClosed) {
+    // Dev/sim hook: the multiplayer-sim bot driver sets __botDirect and sends
+    // legacy inputs on the room itself — the seq'd stream here would both
+    // outrank those sends and build queue backlog (bursty rAF catch-up ticks
+    // overfill the server's per-tick input queue, adding ~250ms of permanent
+    // input latency in headless windows).
+    const botDirect =
+      import.meta.env.DEV && (window as unknown as { __botDirect?: boolean }).__botDirect === true;
+    if (!this.roomClosed && !botDirect) {
       // seq 0 (no predictor) lands in the server's legacy latest-wins path.
       room.send('input', {
         seq,
@@ -1090,20 +1105,16 @@ export class GameScene extends Phaser.Scene {
     const keyboard = this.input.keyboard!;
     this.directionKeys = DIRECTION_KEYS.map(([key, dir]) => [keyboard.addKey(key), dir]);
     this.spaceKey = keyboard.addKey('SPACE');
-    this.gunKey = keyboard.addKey(GUN_KEY);
-    this.hammerKey = keyboard.addKey(HAMMER_KEY);
     this.pad = new GamepadInput();
   }
 
   /**
-   * Latches this frame's skill key presses and reads the pad. JustDown consumes
+   * Latches this frame's trigger press and reads the pad. JustDown consumes
    * the edge, so it must be polled exactly once per frame regardless of how many
    * sim steps or input sends follow.
    */
   private pollSkillKeys(): void {
     this.pad.poll(this.time.now);
-    if (Phaser.Input.Keyboard.JustDown(this.gunKey)) this.pendingGun = true;
-    if (Phaser.Input.Keyboard.JustDown(this.hammerKey)) this.pendingHammer = true;
     if (Phaser.Input.Keyboard.JustDown(this.spaceKey) || this.pad.consumeTriggerPress()) {
       this.pendingTrigger = true;
     }

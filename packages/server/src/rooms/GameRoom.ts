@@ -16,10 +16,11 @@ import {
   createRng,
   getMapDef,
 } from '@bomberman/shared';
-import type { Bot, Game } from '@bomberman/shared';
+import type { Bot, Game, GameState } from '@bomberman/shared';
 import { registerRoomCode, releaseRoomCode } from '../roomCodes';
 import { InputQueue } from './inputQueue';
 import { PlayerSchema, RoomState, copySimToSchema } from './schema';
+import type { Phase } from './schema';
 
 const MAX_PLAYERS = 4;
 const MAX_NICKNAME_LENGTH = 12;
@@ -263,6 +264,18 @@ export class GameRoom extends Room<RoomState> {
         this.finishGame(event.winnerId);
       }
     }
+  }
+
+  /**
+   * Dev-only (SIM_DEBUG_STATE=1): the authoritative sim state, served raw over
+   * http for the local multiplayer sim harness. The harness runs the bot
+   * brains in its own process against this truth — no patch delay, no
+   * client-side reconstruction — while still sending their inputs through the
+   * real browser clients, which is the path the sim exists to exercise.
+   */
+  debugSimState(): { phase: Phase; state: GameState } | null {
+    if (!this.sim) return null;
+    return { phase: this.state.phase, state: this.sim.state };
   }
 
   private finishGame(winnerId: string | null): void {
