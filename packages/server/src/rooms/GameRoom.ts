@@ -1,6 +1,7 @@
 import { Room } from 'colyseus';
 import type { Client } from 'colyseus';
 import type { Delayed } from '@colyseus/core';
+import { $changes } from '@colyseus/schema';
 import {
   BASE_BLAST_RADIUS,
   BASE_BOMB_COUNT,
@@ -47,6 +48,14 @@ export class GameRoom extends Room<RoomState> {
   private sim: Game | null = null;
   private bots: { id: string; bot: Bot }[] = [];
   private teardownTimer: Delayed | null = null;
+
+  // Perf probe for the "lag climbs across consecutive matches in one room"
+  // report: per-match tick timings plus heap / schema-encoder ref growth,
+  // logged by logMatchPerf() when each match finishes.
+  private matchNumber = 0;
+  private tickCount = 0;
+  private tickTotalMs = 0;
+  private tickMaxMs = 0;
 
   onCreate(): void {
     this.state = new RoomState();
@@ -177,6 +186,10 @@ export class GameRoom extends Room<RoomState> {
 
   private startGame(): void {
     void this.lock();
+    this.matchNumber++;
+    this.tickCount = 0;
+    this.tickTotalMs = 0;
+    this.tickMaxMs = 0;
     const seed = hashSeed(`${this.state.code}:${Date.now()}`);
 
     // Humans keep their slots; bots fill the remaining ones when enabled.
@@ -219,6 +232,7 @@ export class GameRoom extends Room<RoomState> {
 
   private simTick(): void {
     if (!this.sim) return;
+    const tickStart = performance.now();
     const inputs = this.inputQueue.consume();
     for (const { id, bot } of this.bots) {
       inputs.set(id, bot.computeInput(this.sim.state));
@@ -232,6 +246,13 @@ export class GameRoom extends Room<RoomState> {
       const ps = this.state.players.get(playerId);
       if (ps) ps.lastInputSeq = this.inputQueue.acked(playerId);
     }
+
+    // Accumulate before the event sweep so the match's final tick is counted
+    // (finishGame below reads these to log the match summary).
+    const tickMs = performance.now() - tickStart;
+    this.tickCount++;
+    this.tickTotalMs += tickMs;
+    if (tickMs > this.tickMaxMs) this.tickMaxMs = tickMs;
 
     for (const event of events) {
       if (event.type === 'blockDestroyed') {
@@ -259,8 +280,36 @@ export class GameRoom extends Room<RoomState> {
     }
     this.state.phase = 'finished';
     this.state.winnerId = winnerId ?? '';
+    this.logMatchPerf();
     // Idle out the finished room only if nobody heads back to the lobby.
     this.teardownTimer = this.clock.setTimeout(() => void this.disconnect(), FINISHED_IDLE_MS);
+  }
+
+  /**
+   * One line per finished match. If the cross-match leak hypothesis holds,
+   * `refsTotal` (schema encoder refCount entries — never deleted for the life
+   * of the room) climbs by tens of thousands per match while `refsLive` stays
+   * flat, and heap/avgTick drift upward with it. Flat numbers refute it.
+   */
+  private logMatchPerf(): void {
+    let refs = 'refsTotal=? refsLive=?';
+    try {
+      // Encoder internals (undocumented): state's ChangeTree -> shared Root.
+      const root = (this.state as unknown as {
+        [$changes]?: { root?: { refCount: object; changeTrees: object } };
+      })[$changes]?.root;
+      if (root) {
+        refs = `refsTotal=${Object.keys(root.refCount).length} refsLive=${Object.keys(root.changeTrees).length}`;
+      }
+    } catch {
+      /* introspection only — never let it break a match */
+    }
+    const heapMb = (process.memoryUsage().heapUsed / (1024 * 1024)).toFixed(1);
+    const avgTick = this.tickCount > 0 ? (this.tickTotalMs / this.tickCount).toFixed(3) : '0';
+    console.log(
+      `[perf] room=${this.roomId} match=${this.matchNumber} ticks=${this.tickCount} ` +
+        `avgTickMs=${avgTick} maxTickMs=${this.tickMaxMs.toFixed(1)} heapMB=${heapMb} ${refs}`,
+    );
   }
 
   private returnToLobby(): void {

@@ -20,6 +20,14 @@
  *
  * Env:
  *   LAG       simulated round-trip latency in ms (default 50)
+ *   GAMES     consecutive matches to play in the same room (default 5). After
+ *             each match the host presses Enter on the results screen
+ *             (Continue -> lobby) and Enter again in the lobby to start the
+ *             next one — the same flow two humans use. The spawned server's
+ *             stdout streams into this console, so its per-match `[perf]`
+ *             lines (tick cost, heap, schema-encoder ref counts) interleave
+ *             with the per-match client pings — the two trends the
+ *             "lag climbs across consecutive matches" hypothesis predicts.
  *   PLAYERS   number of browser players, 2-4 (default 4)
  *   HEADLESS  1 = headless Chrome (default headed, 2x2 window grid)
  *   KEEP      0 = exit when the round ends (default: keep browsers open)
@@ -48,6 +56,7 @@ function envNumber(name: string, fallback: number): number {
 }
 
 const LAG = envNumber('LAG', 50);
+const GAMES = Math.max(1, envNumber('GAMES', 5));
 const PLAYERS = Math.min(4, Math.max(2, envNumber('PLAYERS', 4)));
 const HEADLESS = process.env.HEADLESS === '1';
 const KEEP = process.env.KEEP !== '0';
@@ -122,7 +131,9 @@ async function startInfra(): Promise<void> {
     const server = spawn(TSX, ['src/index.ts'], {
       cwd: path.join(ROOT, 'packages/server'),
       env: { ...process.env, SIMULATE_LATENCY_MS: String(LAG), PORT: String(SERVER_PORT) },
-      stdio: 'ignore',
+      // Server output streams into this console so the per-match [perf] lines
+      // (GameRoom.logMatchPerf) land next to the client-side ping samples.
+      stdio: ['ignore', 'inherit', 'inherit'],
       detached: true,
     });
     children.push(server);
@@ -196,6 +207,26 @@ function roomEval<T>(page: Page, expr: string): Promise<T | null> {
 
 async function waitForRoom(page: Page, name: string): Promise<void> {
   await waitFor(`${name} to join the room`, async () => (await roomEval<string>(page, 'hook.playerId')) !== null, 15000);
+}
+
+/**
+ * Presses Enter on the host until the room reaches `phase`. Enter is the
+ * host's advance key on both screens this drives (results -> Continue,
+ * lobby -> start), and pressing it early or twice is harmless: the results
+ * handler only fires while 'finished' and the lobby handler only while
+ * 'lobby', so retrying just re-sends a message the server ignores.
+ */
+async function hostEnterUntilPhase(host: Page, phase: string, what: string): Promise<void> {
+  await waitFor(
+    what,
+    async () => {
+      if ((await roomEval<string>(host, 'hook.room.state.phase')) === phase) return true;
+      await host.keyboard.press('Enter');
+      await sleep(500);
+      return (await roomEval<string>(host, 'hook.room.state.phase')) === phase;
+    },
+    20000,
+  );
 }
 
 /**
@@ -418,6 +449,25 @@ function roundView(page: Page): Promise<RoundView | null> {
   });
 }
 
+/**
+ * Each page's measured round-trip time (GameScene's ping/pong HUD value), read
+ * off the dev-only `window.__scene` hook. This is the number the players watch
+ * climb, so its per-match trend is the client half of the hypothesis check.
+ */
+async function pingLine(pages: Page[]): Promise<string> {
+  const pings = await Promise.all(
+    pages.map((p) =>
+      p
+        .evaluate(() => {
+          const scene = (window as never as { __scene?: { pingMs?: number | null } }).__scene;
+          return scene && typeof scene.pingMs === 'number' ? scene.pingMs : null;
+        })
+        .catch(() => null),
+    ),
+  );
+  return pings.map((ms, i) => `${NICKNAMES[i]}=${ms === null ? '--' : `${ms}ms`}`).join(' ');
+}
+
 /** DEBUG=1: per-page driver counters + own position, printed every second. */
 async function debugSample(pages: Page[]): Promise<void> {
   for (let i = 0; i < pages.length; i++) {
@@ -452,6 +502,7 @@ async function watchRound(host: Page, pages: Page[]): Promise<void> {
   const dead = new Set<string>();
   let suddenDeath = false;
   let lastDebug = 0;
+  let lastPing = 0;
   while (!shuttingDown) {
     let view: RoundView | null;
     try {
@@ -464,6 +515,10 @@ async function watchRound(host: Page, pages: Page[]): Promise<void> {
     if (process.env.DEBUG === '1' && Date.now() - lastDebug > 1000) {
       lastDebug = Date.now();
       await debugSample(pages);
+    }
+    if (Date.now() - lastPing > 15_000) {
+      lastPing = Date.now();
+      console.log(`  pings at ${secs}s: ${await pingLine(pages)}`);
     }
     for (const p of view.players) {
       if (!p.alive && !dead.has(p.id)) {
@@ -481,6 +536,7 @@ async function watchRound(host: Page, pages: Page[]): Promise<void> {
       for (const p of [...view.players].sort((a, b) => a.placement - b.placement)) {
         console.log(`  #${p.placement || '-'} ${p.nickname}`);
       }
+      console.log(`  pings at end: ${await pingLine(pages)}`);
       return;
     }
     if (Date.now() - start > 6 * 60_000) {
@@ -515,23 +571,36 @@ async function main(): Promise<void> {
     console.log(`${NICKNAMES[i + 1]} joined`);
   }
 
-  // Host starts the match (Enter in the lobby sends 'start' for the host).
   await waitFor(
     'all players in the lobby',
     async () => (await roomEval<number>(host, 'hook.room.state.players.size')) === PLAYERS,
     10000,
   );
-  await host.keyboard.press('Enter');
-  await Promise.all(
-    pages.map((p, i) =>
-      waitFor(`${NICKNAMES[i]} to reach the playing phase`, async () => (await roomEval<string>(p, 'hook.room.state.phase')) === 'playing', 10000),
-    ),
-  );
 
-  await Promise.all(pages.map((p, i) => startBotDriver(p, 0xb0b + i)));
-  console.log(`match started — LAG=${LAG}ms round-trip, in-page bots at 50ms tick`);
+  // Consecutive matches in the same room, driven exactly like two humans
+  // would: host Enter on the results screen (Continue -> lobby), host Enter in
+  // the lobby (start). Repeating Enter until the phase flips absorbs scene
+  // transitions and the simulated latency.
+  for (let game = 1; game <= GAMES; game++) {
+    if (game > 1) {
+      await sleep(1500); // results overlay mounts its Enter handler on the next patch + frame
+      await hostEnterUntilPhase(host, 'lobby', `host to continue after match ${game - 1}`);
+      await sleep(800); // every page swaps back to the lobby scene
+    }
+    await hostEnterUntilPhase(host, 'playing', `match ${game} to start`);
+    await Promise.all(
+      pages.map((p, i) =>
+        waitFor(`${NICKNAMES[i]} to reach the playing phase`, async () => (await roomEval<string>(p, 'hook.room.state.phase')) === 'playing', 10000),
+      ),
+    );
 
-  await watchRound(host, pages);
+    // Fresh driver per match: the previous one stopped itself on 'finished',
+    // and a per-game seed keeps bot behavior from repeating verbatim.
+    await Promise.all(pages.map((p, i) => startBotDriver(p, 0xb0b + game * 100 + i)));
+    console.log(`match ${game}/${GAMES} started — LAG=${LAG}ms round-trip, in-page bots at 50ms tick`);
+
+    await watchRound(host, pages);
+  }
 
   if (KEEP && !HEADLESS) {
     console.log('browsers stay open for inspection — Ctrl-C to exit');

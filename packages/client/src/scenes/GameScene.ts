@@ -526,12 +526,16 @@ export class GameScene extends Phaser.Scene {
       };
       data.connection.room.onStateChange(onPatch);
       data.connection.room.onLeave(this.onRoomLeave);
+      // The room outlives this scene across rematches, so every handler
+      // registered here must come off on shutdown — a leaked one stacks up
+      // once per match.
+      const offPong = data.connection.room.onMessage('pong', (t: number) => {
+        this.pingMs = Math.max(0, Math.round(performance.now() - t));
+      });
       this.events.once('shutdown', () => {
         data.connection.room.onStateChange.remove(onPatch);
         data.connection.room.onLeave.remove(this.onRoomLeave);
-      });
-      data.connection.room.onMessage('pong', (t: number) => {
-        this.pingMs = Math.max(0, Math.round(performance.now() - t));
+        offPong();
       });
       initial = this.renderStateFromRoom();
     }

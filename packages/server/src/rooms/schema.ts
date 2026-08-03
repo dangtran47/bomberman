@@ -126,21 +126,32 @@ export function copySimToSchema(sim: GameState, out: RoomState): void {
     bs.slideInterval = bomb.slideInterval;
   }
 
-  out.explosions.clear();
-  for (const cell of sim.explosions) {
-    const es = new ExplosionSchema();
+  // Explosions/powerups are updated in place by index, reusing schema
+  // instances. The old clear()-and-recreate path allocated fresh instances
+  // every tick, and each one costs a permanent entry in the encoder's ref
+  // table (Root.refCount is never pruned for the life of the room) — ~10k
+  // leaked entries per match. Reuse only allocates when the list grows.
+  while (out.explosions.length > sim.explosions.length) out.explosions.pop();
+  for (const [i, cell] of sim.explosions.entries()) {
+    let es = out.explosions[i];
+    if (!es) {
+      es = new ExplosionSchema();
+      out.explosions.push(es);
+    }
     es.col = cell.col;
     es.row = cell.row;
     es.ticksLeft = cell.ticksLeft;
-    out.explosions.push(es);
   }
 
-  out.powerups.clear();
-  for (const powerup of sim.powerups) {
-    const ps = new PowerupSchema();
+  while (out.powerups.length > sim.powerups.length) out.powerups.pop();
+  for (const [i, powerup] of sim.powerups.entries()) {
+    let ps = out.powerups[i];
+    if (!ps) {
+      ps = new PowerupSchema();
+      out.powerups.push(ps);
+    }
     ps.col = powerup.col;
     ps.row = powerup.row;
     ps.type = powerup.type;
-    out.powerups.push(ps);
   }
 }

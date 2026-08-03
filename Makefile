@@ -37,11 +37,12 @@ test:
 	npm test
 
 # 4-browser multiplayer sim: spawns server (simulated latency) + client, then
-# 4 Chrome windows play a full round via real UI/keyboard input.
-# Usage: make simtest [LAG=50] [PLAYERS=4]
+# 4 Chrome windows play GAMES consecutive rounds via real UI/keyboard input,
+# logging server [perf] lines + client pings per match.
+# Usage: make simtest [LAG=50] [PLAYERS=4] [GAMES=5]
 simtest: LAG = 50
 simtest:
-	LAG=$(LAG) PLAYERS=$(PLAYERS) node_modules/.bin/tsx scripts/multiplayer-sim.ts
+	LAG=$(LAG) PLAYERS=$(PLAYERS) GAMES=$(GAMES) node_modules/.bin/tsx scripts/multiplayer-sim.ts
 
 # Deploy both frontend and backend
 deploy: deploy-fe deploy-be
