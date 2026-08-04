@@ -4,6 +4,7 @@ import {
   BASE_SPEED,
   BOMB_FUSE_TICKS,
   EXPLOSION_DURATION_TICKS,
+  FREEZE_DURATION_TICKS,
   GRACE_CAP,
   GRID_HEIGHT,
   GRID_WIDTH,
@@ -135,7 +136,7 @@ function emptyIceMask(): boolean[][] {
   return Array.from({ length: GRID_HEIGHT }, () => Array<boolean>(GRID_WIDTH).fill(false));
 }
 
-function applyPowerup(player: Player, type: PowerupType): void {
+function applyPowerup(player: Player, type: PowerupType, players: Player[]): void {
   switch (type) {
     case PowerupType.ExtraBomb:
       player.bombCount = Math.min(MAX_BOMB_COUNT, player.bombCount + 1);
@@ -163,6 +164,13 @@ function applyPowerup(player: Player, type: PowerupType): void {
     case PowerupType.Mine:
       clearSkills(player);
       player.mineAmmo = MINE_AMMO_PER_PICKUP;
+      break;
+    // Freeze-time is instant: it holds no slot and clears nothing on the picker.
+    case PowerupType.FreezeTime:
+      for (const other of players) {
+        if (other === player || !other.alive) continue;
+        other.frozenTicks = FREEZE_DURATION_TICKS;
+      }
       break;
   }
 }
@@ -206,6 +214,7 @@ class GameImpl implements Game {
         gunAmmo: 0,
         hammerUses: 0,
         mineAmmo: 0,
+        frozenTicks: 0,
         actionCooldown: 0,
         triggerHeld: false,
         skillTriggerHeld: false,
@@ -240,7 +249,10 @@ class GameImpl implements Game {
       // past a junction while their turn was in flight. 0 offline (no ping).
       const oneWaySec = Math.min(input.pingMs ?? 0, PING_CAP_MS) / 2 / 1000;
       player.turnGrace = Math.min(GRACE_CAP, player.speed * oneWaySec);
-      if (input.direction) player.facing = input.direction; // aims the skills too
+      // Frozen solid: inputs still maintain trigger bookkeeping (so nothing
+      // fires spuriously on unfreeze) but no action or movement happens.
+      const frozen = player.frozenTicks > 0;
+      if (input.direction && !frozen) player.facing = input.direction; // aims the skills too
       // Space is one button: while a skill is held it triggers that skill and
       // places no bombs, and it fires on the press (a held trigger would burn
       // the whole magazine at the cooldown's rate).
@@ -251,12 +263,17 @@ class GameImpl implements Game {
       player.triggerHeld = input.placeBomb;
       if (!input.placeBomb) player.skillTriggerHeld = false;
       else if (armed) player.skillTriggerHeld = true;
-      if (input.placeBomb && !armed && !player.skillTriggerHeld) this.placeBomb(player, events);
+      if (input.placeBomb && !armed && !player.skillTriggerHeld && !frozen) {
+        this.placeBomb(player, events);
+      }
       if (player.actionCooldown > 0) player.actionCooldown--;
-      if (input.fireGun || (pressed && player.gunAmmo > 0)) this.fireGun(player, events);
-      if (input.swingHammer || (pressed && player.hammerUses > 0)) this.swingHammer(player, events);
-      if (input.placeMine || (pressed && player.mineAmmo > 0)) this.placeMine(player, events);
+      if (!frozen) {
+        if (input.fireGun || (pressed && player.gunAmmo > 0)) this.fireGun(player, events);
+        if (input.swingHammer || (pressed && player.hammerUses > 0)) this.swingHammer(player, events);
+        if (input.placeMine || (pressed && player.mineAmmo > 0)) this.placeMine(player, events);
+      }
       stepPlayer(this.world, player, input.direction ?? null);
+      if (player.frozenTicks > 0) player.frozenTicks--;
     }
 
     this.ageExplosions();
@@ -660,7 +677,7 @@ class GameImpl implements Game {
       const index = s.powerups.findIndex((p) => p.col === col && p.row === row);
       if (index === -1) continue;
       const [powerup] = s.powerups.splice(index, 1);
-      applyPowerup(player, powerup.type);
+      applyPowerup(player, powerup.type, s.players);
       events.push({
         type: 'powerupCollected',
         playerId: player.id,

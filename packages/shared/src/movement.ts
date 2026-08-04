@@ -13,6 +13,7 @@ import type { Direction } from './types';
 export interface MovementPlayer {
   x: number; y: number; speed: number;
   kickTicks: number;
+  frozenTicks: number;
   momentumDir: Direction | null; momentumTicks: number; turnTicks: number;
   laneDir: Direction | null; turnGrace: number;
 }
@@ -35,6 +36,7 @@ export function stepPlayer(
   player: MovementPlayer,
   direction: Direction | null,
 ): void {
+  if (player.frozenTicks > 0) return; // frozen solid: no movement at all
   if (!isIce(world, Math.round(player.x), Math.round(player.y))) {
     player.turnTicks = 0;
     if (direction) driveIce(world, player, direction);
