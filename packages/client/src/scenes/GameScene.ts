@@ -6,6 +6,7 @@ import {
   MINE_ARM_TICKS,
   MINE_BURY_TICKS,
   PowerupType,
+  SHIELD_WARNING_TICKS,
   SUDDEN_DEATH_START_TICKS,
   TICK_MS,
   TICK_RATE,
@@ -34,7 +35,16 @@ import { INTERP_DELAY_MS, SnapshotBuffer } from '../interpolation';
 import type { GameRoomConnection, NetPlayer, NetRoomState } from '../net';
 import { Predictor } from '../prediction';
 import type { PredictedPlayer } from '../prediction';
-import { FREEZE_TINT, KICK_TINT, SPRITE_SIZE, TEX, TEXT_RES, TILE_SIZE, addImage } from '../textures';
+import {
+  FREEZE_TINT,
+  KICK_TINT,
+  SHIELD_TINT,
+  SPRITE_SIZE,
+  TEX,
+  TEXT_RES,
+  TILE_SIZE,
+  addImage,
+} from '../textures';
 import type { TexRef } from '../textures';
 import { buildSkillsTable } from '../skillsTable';
 import type { LobbySceneData } from './LobbyScene';
@@ -251,6 +261,7 @@ const SKILL_BADGES: {
   { key: 'gun', type: PowerupType.Gun, value: (p) => p.gunAmmo, showCount: true },
   { key: 'hammer', type: PowerupType.Hammer, value: (p) => p.hammerUses, showCount: true },
   { key: 'mine', type: PowerupType.Mine, value: (p) => p.mineAmmo, showCount: true },
+  { key: 'shield', type: PowerupType.Shield, value: (p) => p.shieldTicks, showCount: false },
 ];
 
 /** Grid delta per facing direction (mirrors the sim's step table). */
@@ -296,6 +307,7 @@ export interface RenderPlayer {
   gunAmmo: number;
   hammerUses: number;
   mineAmmo: number;
+  shieldTicks: number;
   frozenTicks: number;
   facing: Direction;
 }
@@ -960,6 +972,7 @@ export class GameScene extends Phaser.Scene {
         gunAmmo: p.gunAmmo,
         hammerUses: p.hammerUses,
         mineAmmo: p.mineAmmo,
+        shieldTicks: p.shieldTicks,
         frozenTicks: p.frozenTicks,
         facing: p.facing,
       }),
@@ -1363,12 +1376,22 @@ export class GameScene extends Phaser.Scene {
       sprite.setPosition(sprite.x + (tx - sprite.x) * lerp, sprite.y + (ty + bob - sprite.y) * lerp);
       sprite.setDepth(worldDepth(ry, WORLD_LAYER.player));
       sprite.setAlpha(player.alive ? 1 : 0.3); // dead players linger as ghosts
-      // Kick active: solid cyan tint; over the last warning ticks blink to red.
-      // Frozen: solid ice tint beats every kick tint for the duration.
+      // Tint precedence: frozen (ice blue) > shield (gold, blinking over the
+      // last 2s) > kick's cyan/red scheme. Freeze winning the sprite loses no
+      // information: the overhead shield badge still marks that buff.
+      // Freeze and shield gate on `alive` because the sim leaves frozenTicks /
+      // shieldTicks set on a dead player — kick needs no gate, death zeroes
+      // kickTicks. Ghosts therefore render untinted, whatever they held.
+      const shieldWarning = player.shieldTicks > 0 && player.shieldTicks <= SHIELD_WARNING_TICKS;
+      const shieldBlinkOn = Math.floor(player.shieldTicks / 5) % 2 === 0;
       const warning = player.kickTicks > 0 && player.kickTicks <= KICK_WARNING_TICKS;
       const blinkOn = Math.floor(player.kickTicks / 5) % 2 === 0;
-      if (player.frozenTicks > 0) sprite.setTint(FREEZE_TINT);
-      else if (player.kickTicks > KICK_WARNING_TICKS) sprite.setTint(KICK_TINT);
+      if (player.alive && player.frozenTicks > 0) sprite.setTint(FREEZE_TINT);
+      else if (player.alive && player.shieldTicks > SHIELD_WARNING_TICKS) sprite.setTint(SHIELD_TINT);
+      else if (player.alive && shieldWarning) {
+        if (shieldBlinkOn) sprite.setTint(SHIELD_TINT);
+        else sprite.clearTint();
+      } else if (player.kickTicks > KICK_WARNING_TICKS) sprite.setTint(KICK_TINT);
       else if (warning) {
         if (blinkOn) sprite.setTint(KICK_WARNING_TINT);
         else sprite.clearTint();
@@ -1966,7 +1989,7 @@ export class GameScene extends Phaser.Scene {
 
   private buildSkillsPanel(): void {
     const width = 600;
-    const height = 288; // header + 8 skill rows + controls footer, with margin
+    const height = 314; // header + 9 skill rows + controls footer, with margin
     const cx = this.scale.width / 2;
     const cy = this.scale.height / 2;
     const panel = this.add

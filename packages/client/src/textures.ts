@@ -58,7 +58,10 @@ const G7 = 'gameplay7';
 /** Tint applied to kick-related visuals (cyan). */
 export const KICK_TINT = 0x40e0ff;
 
-/** Tint applied to frozen players (ice blue). */
+/** Tint applied to shielded players (gold). */
+export const SHIELD_TINT = 0xffd54a;
+
+/** Tint applied to frozen players (ice blue). Outranks the shield tint. */
 export const FREEZE_TINT = 0x7fd4ff;
 
 /**
@@ -104,6 +107,7 @@ export const TEX = {
     [PowerupType.Gun]: { key: G7, frame: 'winter_gun' },
     [PowerupType.Hammer]: { key: G7, frame: 'winter_hammer' },
     [PowerupType.Mine]: { key: MINE_PAGE, frame: 'dull' },
+    [PowerupType.Shield]: { key: G7, frame: 'winter_shield' },
     [PowerupType.FreezeTime]: { key: FREEZE_PAGE, frame: '__BASE' },
   } as Record<PowerupType, TexRef>,
   /**

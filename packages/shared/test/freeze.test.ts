@@ -5,6 +5,8 @@ import {
   GRID_WIDTH,
   GUN_AMMO_PER_PICKUP,
   MINE_AMMO_PER_PICKUP,
+  POWERUP_TYPE_COUNT,
+  POWERUP_WEIGHTS,
 } from '../src/constants';
 import { createGame } from '../src/game';
 import type { Game, GameEvent } from '../src/game';
@@ -53,6 +55,18 @@ function gameWithPickup(): Game {
   });
   return game;
 }
+
+describe('freeze-time constants', () => {
+  // PowerupType is an append-only wire protocol: Shield shipped at 7 first, so
+  // FreezeTime is pinned at 8. Never reorder.
+  it('freeze-time is enum index 8 with drop weight 1', () => {
+    expect(PowerupType.FreezeTime).toBe(8);
+    expect(POWERUP_TYPE_COUNT).toBe(9);
+    expect(POWERUP_WEIGHTS).toEqual([6, 6, 3, 3, 1, 1, 1, 1, 1]);
+    expect(POWERUP_WEIGHTS[PowerupType.FreezeTime]).toBe(1);
+    expect(FREEZE_DURATION_TICKS).toBe(100);
+  });
+});
 
 describe('freeze-time pickup', () => {
   it('freezes every other alive player, not the picker', () => {

@@ -12,6 +12,7 @@ export enum PowerupType {
   Gun,
   Hammer,
   Mine, // append only: the wire protocol sends these values
+  Shield,
   FreezeTime,
 }
 
@@ -40,6 +41,7 @@ export interface Player {
   gunAmmo: number; // shots left, 0 = no gun
   hammerUses: number; // swings left, 0 = no hammer
   mineAmmo: number; // mines left to place, 0 = no mine
+  shieldTicks: number; // remaining immunity ticks, 0 = no shield
   frozenTicks: number; // >0 = frozen solid: no movement, bombs, or skills
   actionCooldown: number; // ticks until the next gun/hammer use is allowed
   triggerHeld: boolean; // placeBomb held last tick, so skills fire on the press only

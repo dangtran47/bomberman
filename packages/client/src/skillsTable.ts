@@ -32,6 +32,11 @@ const SKILLS: { type: PowerupType; name: string; effect: string; key?: string }[
     key: SKILL_KEY_LABEL,
   },
   {
+    type: PowerupType.Shield,
+    name: 'Shield',
+    effect: 'no damage for 7s — bombs, mines, gun & hammer bounce off',
+  },
+  {
     type: PowerupType.FreezeTime,
     name: 'Freeze Time',
     effect: 'freezes all enemies for 5s the moment you grab it',

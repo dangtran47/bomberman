@@ -19,9 +19,10 @@ Asset already present: `packages/client/public/assets/freeze-time.png`.
 
 ## Shared (`packages/shared`)
 
-- `PowerupType.FreezeTime` = index 7 in `types.ts`.
-- `POWERUP_TYPE_COUNT` 7 → 8 in `constants.ts`.
-- `POWERUP_WEIGHTS`: append weight 1 (rare tier, same as gun/hammer/mine).
+- `PowerupType.FreezeTime` = index 8 in `types.ts` (appended after `Shield`).
+- `POWERUP_TYPE_COUNT` 8 → 9 in `constants.ts`.
+- `POWERUP_WEIGHTS`: append weight 1 after shield's, giving
+  `[6, 6, 3, 3, 1, 1, 1, 1, 1]` (rare tier, same as gun/hammer/mine/shield).
 - New constant `FREEZE_DURATION_TICKS = 100` (5 s at 20 ticks/s).
 - `Player` gains `frozenTicks: number` (0 = not frozen).
 - `applyPowerup()` case FreezeTime: for every other alive player, set `frozenTicks = FREEZE_DURATION_TICKS`. Does not clear held skills, does not touch the picker.
@@ -32,7 +33,10 @@ Asset already present: `packages/client/public/assets/freeze-time.png`.
   - `placeMine()` — refuse.
   - Gun / hammer skill use — refuse.
 
-Note: the shield spec (`2026-08-04-shield-powerup-design.md`) also claims index 7. Shield is unimplemented; freeze-time takes 7 and the shield spec moves to 8.
+Note: the shield (`2026-08-04-shield-powerup-design.md`) shipped to `main` at index 7
+first, so freeze-time takes index 8. The two buffs are orthogonal and need no
+special-case code: shield grants kill immunity, freeze locks actions, so a
+shielded player can still be frozen and a frozen player keeps its immunity.
 
 ## Server (`packages/server`)
 

@@ -35,6 +35,7 @@ export interface NetPlayer {
   gunAmmo: number;
   hammerUses: number;
   mineAmmo: number;
+  shieldTicks: number;
   /** >0 = frozen by a freeze-time pickup. */
   frozenTicks: number;
   /** Last requested direction; aims the gun tracer and hammer flash. */

@@ -355,6 +355,7 @@ export class GameRoom extends Room<RoomState> {
       ps.gunAmmo = 0;
       ps.hammerUses = 0;
       ps.mineAmmo = 0;
+      ps.shieldTicks = 0;
       ps.frozenTicks = 0;
       ps.facing = 'down';
       // The queue was cleared, so acks restart at 0: never publish a stale seq
