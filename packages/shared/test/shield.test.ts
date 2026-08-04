@@ -69,11 +69,11 @@ function dueBomb(col: number, row: number, ownerId = 'p1'): Bomb {
 }
 
 describe('shield constants', () => {
-  it('shield is enum index 7 with drop weight 1', () => {
+  it('shield is enum index 7 with drop weight 3', () => {
     expect(PowerupType.Shield).toBe(7);
     expect(POWERUP_TYPE_COUNT).toBe(9); // FreezeTime appended after Shield
-    expect(POWERUP_WEIGHTS).toEqual([6, 6, 3, 3, 1, 1, 1, 1, 1]);
-    expect(POWERUP_WEIGHTS[PowerupType.Shield]).toBe(1);
+    expect(POWERUP_WEIGHTS).toEqual([12, 12, 6, 6, 2, 2, 2, 3, 1]);
+    expect(POWERUP_WEIGHTS[PowerupType.Shield]).toBe(3);
     expect(SHIELD_DURATION_TICKS).toBe(140);
   });
 });

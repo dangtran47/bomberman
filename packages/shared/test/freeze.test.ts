@@ -62,9 +62,9 @@ describe('freeze-time constants', () => {
   it('freeze-time is enum index 8 with drop weight 1', () => {
     expect(PowerupType.FreezeTime).toBe(8);
     expect(POWERUP_TYPE_COUNT).toBe(9);
-    expect(POWERUP_WEIGHTS).toEqual([6, 6, 3, 3, 1, 1, 1, 1, 1]);
+    expect(POWERUP_WEIGHTS).toEqual([12, 12, 6, 6, 2, 2, 2, 3, 1]);
     expect(POWERUP_WEIGHTS[PowerupType.FreezeTime]).toBe(1);
-    expect(FREEZE_DURATION_TICKS).toBe(100);
+    expect(FREEZE_DURATION_TICKS).toBe(60);
   });
 });
 
