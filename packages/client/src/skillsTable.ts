@@ -31,6 +31,11 @@ const SKILLS: { type: PowerupType; name: string; effect: string; key?: string }[
     effect: '2 mines — arms after 3s, then burns whoever steps on it',
     key: SKILL_KEY_LABEL,
   },
+  {
+    type: PowerupType.Shield,
+    name: 'Shield',
+    effect: 'no damage for 7s — bombs, mines, gun & hammer bounce off',
+  },
 ];
 
 const ICON_SIZE = 24;
