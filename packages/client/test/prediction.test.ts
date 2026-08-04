@@ -19,7 +19,7 @@ function emptyIce(): boolean[][] {
 }
 function spawn(): PredictedPlayer {
   return {
-    x: 1, y: 1, speed: 3, kickTicks: 0,
+    x: 1, y: 1, speed: 3, kickTicks: 0, frozenTicks: 0,
     momentumDir: null, momentumTicks: 0, turnTicks: 0,
     laneDir: null, turnGrace: 0,
     alive: true, bombCount: 1, activeBombs: 0,

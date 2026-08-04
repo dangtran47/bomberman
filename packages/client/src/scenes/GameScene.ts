@@ -312,6 +312,7 @@ function predictedFromNet(p: NetPlayer): PredictedPlayer {
     y: p.y,
     speed: p.speed,
     kickTicks: p.kickTicks,
+    frozenTicks: 0, // Task 3 replaces this with the real net value
     momentumDir: (p.momentumDir || null) as PredictedPlayer['momentumDir'],
     momentumTicks: p.momentumTicks,
     turnTicks: p.turnTicks,

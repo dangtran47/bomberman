@@ -38,6 +38,9 @@ export const MINE_FRAMES: [name: string, x: number, y: number, w: number, h: num
   ['dot', 323, 1320, 280, 222],
 ];
 
+/** Standalone page (not in the atlas): the freeze-time powerup art. */
+export const FREEZE_PAGE = 'freeze-time';
+
 /** A texture reference: atlas page key + named frame registered on it. */
 export interface TexRef {
   key: string;
@@ -98,6 +101,7 @@ export const TEX = {
     [PowerupType.Gun]: { key: G7, frame: 'winter_gun' },
     [PowerupType.Hammer]: { key: G7, frame: 'winter_hammer' },
     [PowerupType.Mine]: { key: MINE_PAGE, frame: 'dull' },
+    [PowerupType.FreezeTime]: { key: FREEZE_PAGE, frame: '__BASE' },
   } as Record<PowerupType, TexRef>,
   /**
    * Winter theme. All blocks are flat 64x64 square tiles (no overhang):

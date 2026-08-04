@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { parseAtlas } from '../atlasParser';
-import { ATLAS_PAGES, ATLAS_URL, MINE_FRAMES, MINE_PAGE } from '../textures';
+import { ATLAS_PAGES, ATLAS_URL, FREEZE_PAGE, MINE_FRAMES, MINE_PAGE } from '../textures';
 
 const ATLAS_TEXT_KEY = 'gameplay-atlas';
 
@@ -16,6 +16,7 @@ export class BootScene extends Phaser.Scene {
   preload(): void {
     for (const page of ATLAS_PAGES) this.load.image(page, `assets/${page}.png`);
     this.load.image(MINE_PAGE, `assets/${MINE_PAGE}.png`);
+    this.load.image(FREEZE_PAGE, `assets/${FREEZE_PAGE}.png`);
     this.load.text(ATLAS_TEXT_KEY, ATLAS_URL);
   }
 
