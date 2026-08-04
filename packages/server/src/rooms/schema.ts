@@ -22,6 +22,8 @@ export class PlayerSchema extends Schema {
   @type('number') gunAmmo = 0;
   @type('number') hammerUses = 0;
   @type('number') mineAmmo = 0;
+  /** >0 = frozen by a freeze-time pickup; clients tint the sprite from it. */
+  @type('number') frozenTicks = 0;
   /** Last requested direction; the client aims skill FX with it. */
   @type('string') facing = 'down';
   @type('number') wins = 0;
@@ -111,6 +113,7 @@ export function copySimToSchema(sim: GameState, out: RoomState): void {
     ps.gunAmmo = player.gunAmmo;
     ps.hammerUses = player.hammerUses;
     ps.mineAmmo = player.mineAmmo;
+    ps.frozenTicks = player.frozenTicks;
     ps.facing = player.facing;
     ps.momentumDir = player.momentumDir ?? '';
     ps.momentumTicks = player.momentumTicks;
