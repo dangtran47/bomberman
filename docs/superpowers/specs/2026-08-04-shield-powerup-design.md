@@ -39,8 +39,9 @@ so held gun/hammer/mine/kick are kept. Sudden death kills through it.
   (550, 1500)–(730, 1650)) into the free `gameplay7.png` slot at (394, 68) via
   `scripts/extract_winter_assets.py`; frame name `winter_shield`.
 - `textures.ts`: `TEX.powerup[PowerupType.Shield] = { key: G7, frame: 'winter_shield' }`.
-- Player visual while shielded: gold tint + pulsing ring; blink during the last
-  2 s (mirror of the kick warning pattern).
+- Player visual while shielded: gold sprite tint, blinking during the last 2 s
+  (mirror of the kick warning pattern); the overhead shield badge marks the
+  buff. (A pulsing ring was considered and dropped as redundant.)
 - `skillsTable.ts`: add a Shield row.
 
 ## Tests (shared)
