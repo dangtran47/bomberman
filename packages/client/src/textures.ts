@@ -58,6 +58,9 @@ const G7 = 'gameplay7';
 /** Tint applied to kick-related visuals (cyan). */
 export const KICK_TINT = 0x40e0ff;
 
+/** Tint applied to frozen players (ice blue). */
+export const FREEZE_TINT = 0x7fd4ff;
+
 /**
  * Central registry of sprite references into the Bomb-It atlas. All scenes
  * render via `TEX.*` so an art swap only touches this file.

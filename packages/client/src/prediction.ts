@@ -81,7 +81,10 @@ export class Predictor {
     this.bombs = this.bombs.filter((b) => b.fuseTicks > 0);
   }
 
-  /** Mirrors GameImpl.tick order: kick timer, bomb placement, then movement. */
+  /**
+   * Mirrors GameImpl.tick order: kick timer, bomb placement, movement, freeze
+   * countdown.
+   */
   private apply(
     input: PendingInput,
     grid: TileType[][],
@@ -90,13 +93,16 @@ export class Predictor {
   ): void {
     if (!this.player.alive) return;
     if (this.player.kickTicks > 0) this.player.kickTicks--;
-    if (input.placeBomb) this.tryPlaceBomb(input.seq, grid, serverBombs);
+    if (input.placeBomb && this.player.frozenTicks <= 0) {
+      this.tryPlaceBomb(input.seq, grid, serverBombs);
+    }
     const world: MovementWorld = {
       grid,
       ice,
       bombs: this.obstacles(serverBombs).map(asMovementBomb),
     };
     stepPlayer(world, this.player, input.direction);
+    if (this.player.frozenTicks > 0) this.player.frozenTicks--;
   }
 
   private tryPlaceBomb(seq: number, grid: TileType[][], serverBombs: Obstacle[]): void {

@@ -34,7 +34,7 @@ import { INTERP_DELAY_MS, SnapshotBuffer } from '../interpolation';
 import type { GameRoomConnection, NetPlayer, NetRoomState } from '../net';
 import { Predictor } from '../prediction';
 import type { PredictedPlayer } from '../prediction';
-import { KICK_TINT, SPRITE_SIZE, TEX, TEXT_RES, TILE_SIZE, addImage } from '../textures';
+import { FREEZE_TINT, KICK_TINT, SPRITE_SIZE, TEX, TEXT_RES, TILE_SIZE, addImage } from '../textures';
 import type { TexRef } from '../textures';
 import { buildSkillsTable } from '../skillsTable';
 import type { LobbySceneData } from './LobbyScene';
@@ -296,6 +296,7 @@ export interface RenderPlayer {
   gunAmmo: number;
   hammerUses: number;
   mineAmmo: number;
+  frozenTicks: number;
   facing: Direction;
 }
 
@@ -312,7 +313,7 @@ function predictedFromNet(p: NetPlayer): PredictedPlayer {
     y: p.y,
     speed: p.speed,
     kickTicks: p.kickTicks,
-    frozenTicks: 0, // Task 3 replaces this with the real net value
+    frozenTicks: p.frozenTicks,
     momentumDir: (p.momentumDir || null) as PredictedPlayer['momentumDir'],
     momentumTicks: p.momentumTicks,
     turnTicks: p.turnTicks,
@@ -959,6 +960,7 @@ export class GameScene extends Phaser.Scene {
         gunAmmo: p.gunAmmo,
         hammerUses: p.hammerUses,
         mineAmmo: p.mineAmmo,
+        frozenTicks: p.frozenTicks,
         facing: p.facing,
       }),
     );
@@ -1362,9 +1364,11 @@ export class GameScene extends Phaser.Scene {
       sprite.setDepth(worldDepth(ry, WORLD_LAYER.player));
       sprite.setAlpha(player.alive ? 1 : 0.3); // dead players linger as ghosts
       // Kick active: solid cyan tint; over the last warning ticks blink to red.
+      // Frozen: solid ice tint beats every kick tint for the duration.
       const warning = player.kickTicks > 0 && player.kickTicks <= KICK_WARNING_TICKS;
       const blinkOn = Math.floor(player.kickTicks / 5) % 2 === 0;
-      if (player.kickTicks > KICK_WARNING_TICKS) sprite.setTint(KICK_TINT);
+      if (player.frozenTicks > 0) sprite.setTint(FREEZE_TINT);
+      else if (player.kickTicks > KICK_WARNING_TICKS) sprite.setTint(KICK_TINT);
       else if (warning) {
         if (blinkOn) sprite.setTint(KICK_WARNING_TINT);
         else sprite.clearTint();
