@@ -12,7 +12,7 @@ so held gun/hammer/mine/kick are kept. Sudden death kills through it.
 ## Shared sim (`packages/shared`)
 
 - `PowerupType.Shield` appended to the enum (index 7 — append-only wire protocol).
-- `POWERUP_TYPE_COUNT = 8`; `POWERUP_WEIGHTS = [6, 6, 3, 3, 1, 1, 1, 1]`
+- `POWERUP_TYPE_COUNT = 9`; `POWERUP_WEIGHTS = [6, 6, 3, 3, 1, 1, 1, 1, 1]`
   (shield rare, same weight as weapons).
 - `SHIELD_DURATION_TICKS = 140` (7 s at 20 tps).
 - `Player.shieldTicks: number` — remaining immunity ticks, `0` = no shield.
