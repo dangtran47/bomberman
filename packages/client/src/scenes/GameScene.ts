@@ -1966,7 +1966,7 @@ export class GameScene extends Phaser.Scene {
 
   private buildSkillsPanel(): void {
     const width = 600;
-    const height = 262; // header + 7 skill rows + controls footer, with margin
+    const height = 288; // header + 8 skill rows + controls footer, with margin
     const cx = this.scale.width / 2;
     const cy = this.scale.height / 2;
     const panel = this.add
