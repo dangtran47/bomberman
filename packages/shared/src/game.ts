@@ -16,6 +16,7 @@ import {
   MINE_AMMO_PER_PICKUP,
   PING_CAP_MS,
   POWERUP_DROP_CHANCE,
+  SHIELD_DURATION_TICKS,
   SKILL_ACTION_COOLDOWN_TICKS,
   SPEED_INCREMENT,
   SUDDEN_DEATH_INTERVAL_TICKS,
@@ -164,6 +165,11 @@ function applyPowerup(player: Player, type: PowerupType): void {
       clearSkills(player);
       player.mineAmmo = MINE_AMMO_PER_PICKUP;
       break;
+    // Passive buff: it sits outside the exclusive skill slot, so a held
+    // weapon is kept and a re-pickup just refreshes the timer.
+    case PowerupType.Shield:
+      player.shieldTicks = SHIELD_DURATION_TICKS;
+      break;
   }
 }
 
@@ -206,6 +212,7 @@ class GameImpl implements Game {
         gunAmmo: 0,
         hammerUses: 0,
         mineAmmo: 0,
+        shieldTicks: 0,
         actionCooldown: 0,
         triggerHeld: false,
         skillTriggerHeld: false,
@@ -235,6 +242,7 @@ class GameImpl implements Game {
     for (const player of s.players) {
       if (!player.alive) continue;
       if (player.kickTicks > 0) player.kickTicks--;
+      if (player.shieldTicks > 0) player.shieldTicks--;
       const input = readInput(inputs, player.id);
       // Latency-scaled turn latitude: how far the player expects to have drifted
       // past a junction while their turn was in flight. 0 offline (no ping).
@@ -373,7 +381,8 @@ class GameImpl implements Game {
     if (softHit && hitCol !== null && hitRow !== null) this.destroySoftBlock(hitCol, hitRow, events);
     // Same as the hammer: detonateDueBombs runs later this tick and takes it to 0.
     else if (shotBomb) shotBomb.fuseTicks = 1;
-    else if (victim) this.killPlayer(victim, events);
+    // A shielded victim absorbs the shot: the ray still stopped there, but no kill.
+    else if (victim && victim.shieldTicks <= 0) this.killPlayer(victim, events);
   }
 
   /**
@@ -403,7 +412,7 @@ class GameImpl implements Game {
       return;
     }
     const victim = this.alivePlayerAt(col, row, player);
-    if (victim) this.killPlayer(victim, events);
+    if (victim && victim.shieldTicks <= 0) this.killPlayer(victim, events);
   }
 
   private alivePlayerAt(col: number, row: number, except: Player): Player | undefined {
@@ -641,7 +650,7 @@ class GameImpl implements Game {
     if (s.explosions.length === 0) return;
     const burning = new Set(s.explosions.map((c) => tileKey(c.col, c.row)));
     for (const player of s.players) {
-      if (!player.alive) continue;
+      if (!player.alive || player.shieldTicks > 0) continue;
       const col = Math.round(player.x);
       const row = Math.round(player.y);
       if (burning.has(tileKey(col, row))) this.killPlayer(player, events);
