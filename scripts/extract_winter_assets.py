@@ -51,6 +51,7 @@ BOX_MALLET = (815, 789, 1007, 996)  # wooden mallet / hammer
 BOX_SHOTGUN = (547, 1331, 777, 1417)  # shotgun (wide, laid out horizontally)
 BOX_ICE = (1295, 1262, 1526, 1486)  # bright light-blue ice tile
 BOX_SNOWBLOCK = (1755, 1262, 1983, 1486)  # plain snow block (window-pane base)
+BOX_SHIELD = (572, 1497, 751, 1712)  # gold shield with the cross-star emblem
 
 GUN_ROTATION = 20  # deg, so the wide shotgun fills the square cell
 
@@ -300,6 +301,7 @@ def build_page() -> tuple[Image.Image, list[tuple[str, int, int, int, int]]]:
         "winter_floor_ice": fill_cell(sheet.crop(BOX_ICE)),
         "winter_gun": build_gun(sheet),
         "winter_hammer": fit_center(trim(sheet.crop(BOX_MALLET))),
+        "winter_shield": fit_center(trim(sheet.crop(BOX_SHIELD))),
     }
 
     # 2px padding everywhere; house occupies the left 192x192 block
@@ -312,6 +314,7 @@ def build_page() -> tuple[Image.Image, list[tuple[str, int, int, int, int]]]:
         ("winter_floor_ice", 196, 68),
         ("winter_gun", 262, 68),
         ("winter_hammer", 328, 68),
+        ("winter_shield", 394, 68),
     ]
 
     page = Image.new("RGBA", (PAGE_W, PAGE_H), (0, 0, 0, 0))

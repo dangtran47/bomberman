@@ -21,14 +21,15 @@ export const MAX_BLAST_RADIUS = 8;
 
 export const SOFT_BLOCK_DENSITY = 0.75; // fraction of eligible floor tiles that become soft blocks
 export const POWERUP_DROP_CHANCE = 0.5;
-export const POWERUP_TYPE_COUNT = 7;
+export const POWERUP_TYPE_COUNT = 8;
 
 /**
  * Relative drop weights per PowerupType, in enum order
- * (ExtraBomb, BiggerBlast, Speed, Kick, Gun, Hammer, Mine).
- * Bomb count and blast radius are the common drops; the weapons are rare.
+ * (ExtraBomb, BiggerBlast, Speed, Kick, Gun, Hammer, Mine, Shield).
+ * Bomb count and blast radius are the common drops; the weapons and the
+ * shield are rare.
  */
-export const POWERUP_WEIGHTS = [6, 6, 3, 3, 1, 1, 1] as const;
+export const POWERUP_WEIGHTS = [6, 6, 3, 3, 1, 1, 1, 1] as const;
 export const POWERUP_WEIGHT_TOTAL = POWERUP_WEIGHTS.reduce((sum, w) => sum + w, 0);
 
 /** Maps a [0, 1) roll to a PowerupType index using POWERUP_WEIGHTS. One roll, so RNG use is unchanged. */
@@ -62,6 +63,10 @@ export const GUN_AMMO_PER_PICKUP = 2;
 export const HAMMER_USES_PER_PICKUP = 3;
 export const MINE_AMMO_PER_PICKUP = 2;
 export const SKILL_ACTION_COOLDOWN_TICKS = 6; // shared gun/hammer cooldown
+
+/** Shield immunity window (7s at 20tps); blocks every attack except sudden death. */
+export const SHIELD_DURATION_TICKS = 140;
+export const SHIELD_WARNING_TICKS = 40; // last 2s: the client blinks the tint
 
 /** Mine lifetime, counted from placement: 2s inert, then 3s armed, then buried. */
 export const MINE_ARM_TICKS = 40;

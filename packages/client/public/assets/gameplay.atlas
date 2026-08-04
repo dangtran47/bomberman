@@ -362,3 +362,10 @@ winter_hammer
   orig: 64, 64
   offset: 0, 0
   index: -1
+winter_shield
+  rotate: false
+  xy: 394, 68
+  size: 64, 64
+  orig: 64, 64
+  offset: 0, 0
+  index: -1

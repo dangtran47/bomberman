@@ -55,6 +55,9 @@ const G7 = 'gameplay7';
 /** Tint applied to kick-related visuals (cyan). */
 export const KICK_TINT = 0x40e0ff;
 
+/** Tint applied to shielded players (gold). */
+export const SHIELD_TINT = 0xffd54a;
+
 /**
  * Central registry of sprite references into the Bomb-It atlas. All scenes
  * render via `TEX.*` so an art swap only touches this file.
@@ -98,6 +101,7 @@ export const TEX = {
     [PowerupType.Gun]: { key: G7, frame: 'winter_gun' },
     [PowerupType.Hammer]: { key: G7, frame: 'winter_hammer' },
     [PowerupType.Mine]: { key: MINE_PAGE, frame: 'dull' },
+    [PowerupType.Shield]: { key: G7, frame: 'winter_shield' },
   } as Record<PowerupType, TexRef>,
   /**
    * Winter theme. All blocks are flat 64x64 square tiles (no overhang):
