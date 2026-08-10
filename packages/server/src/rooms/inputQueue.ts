@@ -1,8 +1,9 @@
+import { PING_CAP_MS, TICK_RATE } from '@bomberman/shared';
 import type { Direction, PlayerInput } from '@bomberman/shared';
 
 const DIRECTIONS: readonly string[] = ['up', 'down', 'left', 'right'];
-/** Max queued inputs per player (250ms at 20Hz); beyond this the oldest is dropped. */
-const MAX_QUEUE = 5;
+/** Max queued inputs per player (250ms worth); beyond this the oldest is dropped. */
+const MAX_QUEUE = Math.round(0.25 * TICK_RATE);
 
 interface QueuedInput {
   seq: number;
@@ -11,6 +12,8 @@ interface QueuedInput {
   fireGun: boolean;
   swingHammer: boolean;
   placeMine: boolean;
+  /** Client-reported RTT, already clamped; drives the sim's turnGrace. */
+  pingMs: number | undefined;
 }
 
 interface LegacyEntry {
@@ -29,6 +32,8 @@ interface PlayerEntry {
   acked: number;
   /** Direction to keep applying when the queue runs dry (TCP stall). */
   heldDirection: Direction | null;
+  /** Last consumed pingMs, repeated on dry-hold ticks so grace stays stable. */
+  heldPing: number | undefined;
   /** Pre-seq clients: latest-wins direction with sticky one-shot action flags. */
   legacy: LegacyEntry | null;
 }
@@ -53,17 +58,24 @@ export class InputQueue {
   /** Applies a raw (untrusted) client message; malformed messages are ignored. */
   push(playerId: string, message: unknown): void {
     if (typeof message !== 'object' || message === null) return;
-    const { seq, direction, placeBomb, fireGun, swingHammer, placeMine } = message as {
+    const { seq, direction, placeBomb, fireGun, swingHammer, placeMine, pingMs } = message as {
       seq?: unknown;
       direction?: unknown;
       placeBomb?: unknown;
       fireGun?: unknown;
       swingHammer?: unknown;
       placeMine?: unknown;
+      pingMs?: unknown;
     };
     const validDirection = direction === null || DIRECTIONS.includes(direction as string);
     if (!validDirection || typeof placeBomb !== 'boolean') return;
     const dir = direction as Direction | null;
+    // Untrusted latency claim: clamp here so a lying client caps out at the
+    // same turn grace an honest 400ms connection gets.
+    const ping =
+      typeof pingMs === 'number' && Number.isFinite(pingMs) && pingMs >= 0
+        ? Math.min(pingMs, PING_CAP_MS)
+        : undefined;
     const entry = this.entry(playerId);
 
     if (typeof seq !== 'number' || !Number.isInteger(seq) || seq <= 0) {
@@ -93,6 +105,7 @@ export class InputQueue {
       fireGun: fireGun === true,
       swingHammer: swingHammer === true,
       placeMine: placeMine === true,
+      pingMs: ping,
     });
     // Backlog cap: drop the oldest. The ack naturally skips dropped seqs when a
     // later input is consumed, so the client discards them from its pending list.
@@ -107,12 +120,14 @@ export class InputQueue {
       if (next) {
         entry.acked = next.seq;
         entry.heldDirection = next.direction;
+        entry.heldPing = next.pingMs;
         snapshot.set(id, {
           direction: next.direction,
           placeBomb: next.placeBomb,
           fireGun: next.fireGun,
           swingHammer: next.swingHammer,
           placeMine: next.placeMine,
+          pingMs: next.pingMs,
         });
       } else if (entry.legacy) {
         const l = entry.legacy;
@@ -129,7 +144,7 @@ export class InputQueue {
         l.placeMine = false;
       } else {
         // Queue dry (TCP stall): hold the last direction, no actions, ack frozen.
-        snapshot.set(id, { direction: entry.heldDirection, placeBomb: false });
+        snapshot.set(id, { direction: entry.heldDirection, placeBomb: false, pingMs: entry.heldPing });
       }
     }
     return snapshot;
@@ -150,7 +165,7 @@ export class InputQueue {
   private entry(playerId: string): PlayerEntry {
     let entry = this.players.get(playerId);
     if (!entry) {
-      entry = { queue: [], lastSeq: 0, acked: 0, heldDirection: null, legacy: null };
+      entry = { queue: [], lastSeq: 0, acked: 0, heldDirection: null, heldPing: undefined, legacy: null };
       this.players.set(playerId, entry);
     }
     return entry;

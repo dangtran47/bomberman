@@ -49,6 +49,8 @@ export class GameRoom extends Room<RoomState> {
   private sim: Game | null = null;
   private bots: { id: string; bot: Bot }[] = [];
   private teardownTimer: Delayed | null = null;
+  /** Fractional-ms carry for the fixed-timestep pump below. */
+  private simAcc = 0;
 
   // Perf probe for the "lag climbs across consecutive matches in one room"
   // report: per-match tick timings plus heap / schema-encoder ref growth,
@@ -228,7 +230,21 @@ export class GameRoom extends Room<RoomState> {
 
     this.state.seed = seed;
     this.state.phase = 'playing';
-    this.setSimulationInterval(() => this.simTick(), TICK_MS);
+    // Fixed timestep off measured elapsed time, not the interval firing: a bare
+    // setInterval drifts slow (timer jitter, event-loop stalls), which at 60Hz
+    // makes the server consume inputs slower than clients send them and the
+    // per-player queue silts up into permanent input latency.
+    this.simAcc = 0;
+    this.setSimulationInterval((deltaMs) => this.pumpSim(deltaMs), TICK_MS);
+  }
+
+  private pumpSim(deltaMs: number): void {
+    // Cap catch-up work after a stall; beyond this the backlog is dropped.
+    this.simAcc = Math.min(this.simAcc + deltaMs, 250);
+    while (this.simAcc >= TICK_MS) {
+      this.simAcc -= TICK_MS;
+      this.simTick();
+    }
   }
 
   private simTick(): void {

@@ -31,11 +31,7 @@ export class PlayerSchema extends Schema {
   @type('number') placement = 0;
   /** Seq of this player's last input applied to a tick; clients reconcile against it. */
   @type('number') lastInputSeq = 0;
-  /** Ice-drift heading carried across ticks ('' = none); predictor rebases from it. */
-  @type('string') momentumDir = '';
-  @type('number') momentumTicks = 0;
-  @type('number') turnTicks = 0;
-  /** Lane commitment for the corner slide ('' = none). */
+  /** Lane commitment for the corner slide ('' = none); predictor rebases from it. */
   @type('string') laneDir = '';
 }
 
@@ -117,9 +113,6 @@ export function copySimToSchema(sim: GameState, out: RoomState): void {
     ps.shieldTicks = player.shieldTicks;
     ps.frozenTicks = player.frozenTicks;
     ps.facing = player.facing;
-    ps.momentumDir = player.momentumDir ?? '';
-    ps.momentumTicks = player.momentumTicks;
-    ps.turnTicks = player.turnTicks;
     ps.laneDir = player.laneDir ?? '';
   }
 

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { PING_CAP_MS, TICK_RATE } from '@bomberman/shared';
 import { InputQueue } from '../src/rooms/inputQueue';
+
+/** Mirrors the queue's internal cap: 250ms worth of ticks. */
+const MAX_QUEUE = Math.round(0.25 * TICK_RATE);
 
 const msg = (seq: number, direction: string | null = 'right', extra = {}) => ({
   seq,
@@ -40,11 +44,38 @@ describe('InputQueue', () => {
     expect(q.acked('p0')).toBe(5);
   });
 
-  it('caps the backlog at 5, dropping the oldest; ack skips dropped seqs', () => {
+  it('caps the backlog at 250ms of ticks, dropping the oldest; ack skips dropped seqs', () => {
     const q = new InputQueue();
-    for (let s = 1; s <= 7; s++) q.push('p0', msg(s, s % 2 ? 'up' : 'down'));
+    for (let s = 1; s <= MAX_QUEUE + 2; s++) q.push('p0', msg(s, s % 2 ? 'up' : 'down'));
     expect(q.consume().get('p0')).toMatchObject({ direction: 'up' }); // seq 3 (1, 2 dropped)
     expect(q.acked('p0')).toBe(3);
+  });
+
+  it('forwards pingMs with the consumed input, clamped to PING_CAP_MS', () => {
+    const q = new InputQueue();
+    q.push('p0', msg(1, 'right', { pingMs: 120 }));
+    q.push('p0', msg(2, 'right', { pingMs: 99999 })); // lying client
+    expect(q.consume().get('p0')).toMatchObject({ pingMs: 120 });
+    expect(q.consume().get('p0')).toMatchObject({ pingMs: PING_CAP_MS });
+  });
+
+  it('drops an invalid pingMs but keeps the input', () => {
+    const q = new InputQueue();
+    q.push('p0', msg(1, 'up', { pingMs: 'fast' }));
+    q.push('p0', msg(2, 'up', { pingMs: -50 }));
+    q.push('p0', msg(3, 'up', { pingMs: Number.NaN }));
+    for (let i = 0; i < 3; i++) {
+      const input = q.consume().get('p0')!;
+      expect(input.direction).toBe('up');
+      expect(input.pingMs).toBeUndefined();
+    }
+  });
+
+  it('repeats the last pingMs on dry-hold ticks so turn grace stays stable', () => {
+    const q = new InputQueue();
+    q.push('p0', msg(1, 'left', { pingMs: 80 }));
+    q.consume();
+    expect(q.consume().get('p0')).toMatchObject({ direction: 'left', pingMs: 80 });
   });
 
   it('treats a message without seq as legacy latest-wins with sticky actions', () => {
