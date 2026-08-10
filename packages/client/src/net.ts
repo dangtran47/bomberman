@@ -44,9 +44,6 @@ export interface NetPlayer {
   placement: number;
   /** Seq of the last input the server applied for this player (reconciliation ack). */
   lastInputSeq: number;
-  momentumDir: string;
-  momentumTicks: number;
-  turnTicks: number;
   laneDir: string;
 }
 

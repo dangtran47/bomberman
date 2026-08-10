@@ -70,7 +70,7 @@ export const GRID_FRAME_WIDTH = 18;
 const HUMAN_ID = 'p0';
 const PLAYER_IDS = ['p0', 'p1', 'p2', 'p3'];
 /** Max sim steps per frame; if further behind, the backlog is dropped. */
-const MAX_STEPS_PER_FRAME = 5;
+const MAX_STEPS_PER_FRAME = 10;
 /** Time constant (ms) for bleeding off prediction corrections. */
 const PREDICTION_ERROR_SMOOTH_MS = 100;
 /** Correction size (tiles) past which a visible glide reads worse than a snap. */
@@ -326,9 +326,6 @@ function predictedFromNet(p: NetPlayer): PredictedPlayer {
     speed: p.speed,
     kickTicks: p.kickTicks,
     frozenTicks: p.frozenTicks,
-    momentumDir: (p.momentumDir || null) as PredictedPlayer['momentumDir'],
-    momentumTicks: p.momentumTicks,
-    turnTicks: p.turnTicks,
     laneDir: (p.laneDir || null) as PredictedPlayer['laneDir'],
     turnGrace: 0,
     alive: p.alive,
@@ -771,7 +768,7 @@ export class GameScene extends Phaser.Scene {
     else if (armed !== null) this.triggerServedSkill = true;
     const bombHeld = armed === null && triggerHeld && !this.triggerServedSkill;
 
-    // One sequenced input per 20Hz step: the server applies each for exactly one
+    // One sequenced input per sim step: the server applies each for exactly one
     // tick, so held-key duration (and therefore distance) is reproduced exactly.
     this.accumulator += delta;
     let steps = 0;
@@ -870,7 +867,14 @@ export class GameScene extends Phaser.Scene {
     if (this.predictor) {
       // Near end of the render blend: where we were before this step ran.
       this.prevTickPos.set(this.myId, { x: this.predictor.player.x, y: this.predictor.player.y });
-      const input = this.predictor.step(direction, bombHeld, this.grid!, this.iceMask, serverBombs);
+      const input = this.predictor.step(
+        direction,
+        bombHeld,
+        this.grid!,
+        this.iceMask,
+        serverBombs,
+        this.pingMs ?? 0,
+      );
       this.predictor.ageBombs();
       seq = input.seq;
     }

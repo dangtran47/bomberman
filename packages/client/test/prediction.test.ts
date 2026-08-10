@@ -20,7 +20,6 @@ function emptyIce(): boolean[][] {
 function spawn(): PredictedPlayer {
   return {
     x: 1, y: 1, speed: 3, kickTicks: 0, frozenTicks: 0,
-    momentumDir: null, momentumTicks: 0, turnTicks: 0,
     laneDir: null, turnGrace: 0,
     alive: true, bombCount: 1, activeBombs: 0,
   };
@@ -84,10 +83,10 @@ describe('Predictor', () => {
     expect(p.bombs[0]).toMatchObject({ col: 1, row: 1 });
     expect(p.player.activeBombs).toBe(1);
     // Walk off, then try to walk back on: blocked by own predicted bomb.
-    for (let i = 0; i < 10; i++) p.step('right', false, boxGrid(), emptyIce(), []);
+    for (let i = 0; i < 30; i++) p.step('right', false, boxGrid(), emptyIce(), []);
     const off = p.player.x;
-    expect(off).toBeGreaterThan(1.4);
-    for (let i = 0; i < 10; i++) p.step('left', false, boxGrid(), emptyIce(), []);
+    expect(off).toBeGreaterThan(2.4); // 30 ticks at 0.05 tiles/tick
+    for (let i = 0; i < 30; i++) p.step('left', false, boxGrid(), emptyIce(), []);
     expect(p.player.x).toBeGreaterThanOrEqual(2 - 1e-9);
   });
 
@@ -103,6 +102,22 @@ describe('Predictor', () => {
     expect(p.player.activeBombs).toBe(0);
   });
 
+  it('applies the same ping-scaled turn grace as the server', () => {
+    // Player moving right, just past column 5 on row 7; a turn 'up' with 200ms
+    // ping gives grace = min(0.45, 3 * 0.1) = 0.3, covering the 0.3 overshoot,
+    // so the server snaps x back to the junction — the predictor must match.
+    const p = new Predictor({ ...spawn(), x: 5.3, y: 7, laneDir: 'right' });
+    p.step('up', false, boxGrid(), emptyIce(), [], 200);
+    expect(p.player.x).toBeCloseTo(5, 6);
+    expect(p.player.y).toBeLessThan(7);
+
+    // Without ping the grace is 0 and the overshoot path is kept.
+    const q = new Predictor({ ...spawn(), x: 5.3, y: 7, laneDir: 'right' });
+    q.step('up', false, boxGrid(), emptyIce(), []);
+    expect(q.player.x).toBeGreaterThan(5.3);
+    expect(q.player.y).toBeCloseTo(7, 6);
+  });
+
   it('stops predicting once dead', () => {
     const p = new Predictor(spawn());
     p.reconcile({ ...spawn(), alive: false }, 0, boxGrid(), emptyIce(), []);
@@ -112,7 +127,7 @@ describe('Predictor', () => {
   });
 });
 
-function pickPredicted(sim: { x: number; y: number; alive: boolean; speed: number; bombCount: number; activeBombs: number; kickTicks: number; momentumDir: Direction | null; momentumTicks: number; turnTicks: number; laneDir: Direction | null }): Partial<PredictedPlayer> {
-  const { x, y, alive, speed, bombCount, activeBombs, kickTicks, momentumDir, momentumTicks, turnTicks, laneDir } = sim;
-  return { x, y, alive, speed, bombCount, activeBombs, kickTicks, momentumDir, momentumTicks, turnTicks, laneDir };
+function pickPredicted(sim: { x: number; y: number; alive: boolean; speed: number; bombCount: number; activeBombs: number; kickTicks: number; laneDir: Direction | null }): Partial<PredictedPlayer> {
+  const { x, y, alive, speed, bombCount, activeBombs, kickTicks, laneDir } = sim;
+  return { x, y, alive, speed, bombCount, activeBombs, kickTicks, laneDir };
 }

@@ -1,4 +1,4 @@
-import { BOMB_FUSE_TICKS, TileType, stepPlayer } from '@bomberman/shared';
+import { BOMB_FUSE_TICKS, GRACE_CAP, PING_CAP_MS, TileType, stepPlayer } from '@bomberman/shared';
 import type { Direction, MovementBomb, MovementPlayer, MovementWorld } from '@bomberman/shared';
 
 export interface PredictedPlayer extends MovementPlayer {
@@ -11,6 +11,9 @@ export interface PendingInput {
   seq: number;
   direction: Direction | null;
   placeBomb: boolean;
+  /** RTT reported with this input; replay must use it so the grace the server
+   * will compute for the very same input is reproduced. */
+  pingMs: number;
 }
 
 export interface PredictedBomb {
@@ -50,8 +53,9 @@ export class Predictor {
     grid: TileType[][],
     ice: boolean[][],
     serverBombs: Obstacle[],
+    pingMs = 0,
   ): PendingInput {
-    const input: PendingInput = { seq: ++this.nextSeq, direction, placeBomb: bombHeld };
+    const input: PendingInput = { seq: ++this.nextSeq, direction, placeBomb: bombHeld, pingMs };
     this.pending.push(input);
     this.apply(input, grid, ice, serverBombs);
     return input;
@@ -82,8 +86,8 @@ export class Predictor {
   }
 
   /**
-   * Mirrors GameImpl.tick order: kick timer, bomb placement, movement, freeze
-   * countdown.
+   * Mirrors GameImpl.tick order: kick timer, turn grace, bomb placement,
+   * movement, freeze countdown.
    */
   private apply(
     input: PendingInput,
@@ -93,6 +97,10 @@ export class Predictor {
   ): void {
     if (!this.player.alive) return;
     if (this.player.kickTicks > 0) this.player.kickTicks--;
+    // Same formula as GameImpl.tick: the server grants this exact latitude for
+    // this exact input, so replay through the shared movement code converges.
+    const oneWaySec = Math.min(input.pingMs, PING_CAP_MS) / 2 / 1000;
+    this.player.turnGrace = Math.min(GRACE_CAP, this.player.speed * oneWaySec);
     if (input.placeBomb && this.player.frozenTicks <= 0) {
       this.tryPlaceBomb(input.seq, grid, serverBombs);
     }
