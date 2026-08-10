@@ -4,6 +4,7 @@ import {
   GRID_HEIGHT,
   GRID_WIDTH,
   MINE_ARM_TICKS,
+  secs,
 } from './constants';
 import { SHRINK_ORDER, shrinkCountAtTick } from './suddenDeath';
 import { TileType } from './types';
@@ -26,7 +27,7 @@ export interface Bot {
 const POWERUP_SEARCH_DEPTH = 8;
 
 /** Tiles converting to HardBlock within this many ticks count as dangerous. */
-const SHRINK_LOOKAHEAD_TICKS = 40; // 2s
+const SHRINK_LOOKAHEAD_TICKS = secs(2);
 
 /** Fixed neighbor scan order keeps BFS tie-breaking deterministic without rng. */
 const NEIGHBOR_STEPS: { dc: number; dr: number; dir: Direction }[] = [

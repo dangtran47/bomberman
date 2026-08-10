@@ -47,9 +47,6 @@ export interface Player {
   triggerHeld: boolean; // placeBomb held last tick, so skills fire on the press only
   skillTriggerHeld: boolean; // this press already served a skill; no bomb until it is released
   facing: Direction; // last requested direction; aims gun and hammer
-  momentumDir: Direction | null; // heading carried across ice, null when at rest
-  momentumTicks: number; // remaining glide budget on ice
-  turnTicks: number; // ticks spent fighting the current heading on ice
   laneDir: Direction | null; // direction that pulled the player off-lane; the corner slide follows it
   turnGrace: number; // tiles of trailing-side latitude when committing a turn this tick; 0 offline
   deathTick: number | null; // null while alive/survivor

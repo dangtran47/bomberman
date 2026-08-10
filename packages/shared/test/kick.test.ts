@@ -4,6 +4,7 @@ import {
   GRID_WIDTH,
   KICK_DURATION_TICKS,
   MAX_SPEED,
+  SUDDEN_DEATH_INTERVAL_TICKS,
   SUDDEN_DEATH_START_TICKS,
   kickSlideInterval,
 } from '../src/constants';
@@ -71,7 +72,7 @@ describe('kick pickup and decay', () => {
   it('sets kickTicks on pickup, decays 1/tick while alive, expires to 0, and re-pickup resets', () => {
     const game = twoPlayerGame();
     game.state.powerups.push({ col: 1, row: 0, type: PowerupType.Kick });
-    run(game, 4, { p1: move('right') }); // collects at (1,0) on the 4th tick
+    run(game, 11, { p1: move('right') }); // x passes 0.5, rounding onto (1,0): collected
     expect(player(game, 'p1').kickTicks).toBe(KICK_DURATION_TICKS);
 
     run(game, KICK_DURATION_TICKS - 1); // idle
@@ -104,7 +105,7 @@ describe('kick pushing bombs', () => {
     const game = twoPlayerGame();
     const p1 = player(game, 'p1');
     p1.kickTicks = KICK_DURATION_TICKS;
-    const interval = kickSlideInterval(p1.speed); // base speed 3 -> 2 ticks/tile
+    const interval = kickSlideInterval(p1.speed); // base speed 3 -> 7 ticks/tile at 60tps
     const bomb = addBomb(game, { col: 1, row: 0 });
 
     run(game, interval, { p1: move('right') });
@@ -198,7 +199,8 @@ describe('kicked bomb impact detonation', () => {
     const { col, row } = SHRINK_ORDER[1]; // (1,0): free of player spawns
     // High cooldown so moveSlidingBombs does not advance it before the shrink.
     addBomb(game, { col, row, slideDC: 1, slideCooldown: 50 });
-    game.state.tick = SUDDEN_DEATH_START_TICKS + 9; // next tick -> elapsed 10, index 1
+    // Next tick's elapsed time is exactly one interval -> shrink index 1.
+    game.state.tick = SUDDEN_DEATH_START_TICKS + SUDDEN_DEATH_INTERVAL_TICKS - 1;
     const events = run(game, 1);
     expect(ofType(events, 'arenaShrink')).toEqual([
       expect.objectContaining({ col, row }),

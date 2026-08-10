@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BASE_SPEED,
   EXPLOSION_DURATION_TICKS,
   GRID_HEIGHT,
   GRID_WIDTH,
@@ -10,6 +11,7 @@ import {
   MINE_ARM_TICKS,
   MINE_BURY_TICKS,
   minePhase,
+  TICK_RATE,
 } from '../src/constants';
 import { createGame } from '../src/game';
 import type { Game, GameEvent } from '../src/game';
@@ -17,6 +19,9 @@ import { PowerupType, TileType } from '../src/types';
 import type { Direction, Mine, PlayerInput } from '../src/types';
 
 const SEED_NO_DROP = 1; // first roll fails POWERUP_DROP_CHANCE
+
+// Walking one tile takes TICK_RATE / BASE_SPEED ticks (20 at 60Hz).
+const TICKS_PER_TILE = TICK_RATE / BASE_SPEED;
 
 const move = (direction: Direction): PlayerInput => ({ direction, placeBomb: false });
 const act = (extra: Partial<PlayerInput>): PlayerInput => ({
@@ -61,7 +66,7 @@ function mine(col: number, row: number, ticks: number, ownerId = 'p2'): Mine {
 
 describe('minePhase', () => {
   it('switches phase exactly on the arm and bury boundaries', () => {
-    expect([MINE_ARM_TICKS, MINE_BURY_TICKS]).toEqual([40, 100]);
+    expect([MINE_ARM_TICKS, MINE_BURY_TICKS]).toEqual([120, 300]);
     expect(minePhase(0)).toBe(0);
     expect(minePhase(MINE_ARM_TICKS - 1)).toBe(0);
     expect(minePhase(MINE_ARM_TICKS)).toBe(1);
@@ -135,7 +140,7 @@ describe('mine placement', () => {
     const game = twoPlayerGame();
     game.state.mines.push(mine(2, 0, 0));
 
-    run(game, 21, { p1: move('right') });
+    run(game, 3 * TICKS_PER_TILE + 1, { p1: move('right') });
 
     expect(Math.round(player(game, 'p1').x)).toBe(3); // walked straight over it
     expect(game.state.mines).toHaveLength(1);
@@ -164,7 +169,7 @@ describe('mine detonation', () => {
     const game = twoPlayerGame();
     game.state.mines.push(mine(2, 0, MINE_ARM_TICKS));
 
-    const events = run(game, 14, { p1: move('right') });
+    const events = run(game, 2 * TICKS_PER_TILE, { p1: move('right') });
 
     expect(ofType(events, 'mineExploded')).toEqual([
       expect.objectContaining({ ownerId: 'p2', col: 2, row: 0 }),
@@ -179,7 +184,7 @@ describe('mine detonation', () => {
     const game = twoPlayerGame();
     game.state.mines.push(mine(2, 0, MINE_BURY_TICKS));
 
-    const events = run(game, 14, { p1: move('right') });
+    const events = run(game, 2 * TICKS_PER_TILE, { p1: move('right') });
 
     expect(ofType(events, 'mineExploded')).toHaveLength(1);
     expect(player(game, 'p1').alive).toBe(false);
@@ -198,7 +203,8 @@ describe('mine detonation', () => {
     game.state.mines.push(mine(2, 0, MINE_ARM_TICKS, 'p3'));
 
     // Stops on the detonation tick so the explosion cell is still fresh.
-    for (let i = 0; i < 14 && game.state.mines.length > 0; i++) run(game, 1, { p1: move('right') });
+    for (let i = 0; i < 2 * TICKS_PER_TILE && game.state.mines.length > 0; i++)
+      run(game, 1, { p1: move('right') });
 
     expect(player(game, 'p1').alive).toBe(false);
     expect(p2.alive).toBe(true);
@@ -241,7 +247,7 @@ describe('mine pickups', () => {
   /** Walks p1 right from (0,0) onto a single powerup parked at (1,0). */
   function grab(game: Game, type: PowerupType): void {
     game.state.powerups.push({ col: 1, row: 0, type });
-    run(game, 7, { p1: move('right') });
+    run(game, TICKS_PER_TILE, { p1: move('right') });
   }
 
   it('grants a full set of mines and re-pickup refills it', () => {

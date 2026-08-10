@@ -117,7 +117,7 @@ describe('sudden death', () => {
     const game = centeredGame();
     const before = run(game, SUDDEN_DEATH_START_TICKS - 1);
     expect(ofType(before, 'arenaShrink')).toHaveLength(0);
-    const at = run(game, 1); // tick 2400
+    const at = run(game, 1); // tick SUDDEN_DEATH_START_TICKS
     expect(ofType(at, 'arenaShrink')).toEqual([{ type: 'arenaShrink', col: 0, row: 0 }]);
     expect(game.state.grid[0][0]).toBe(TileType.HardBlock);
   });
@@ -126,7 +126,7 @@ describe('sudden death', () => {
     const game = centeredGame();
     run(game, SUDDEN_DEATH_START_TICKS); // consume the first conversion
     const shrinks: { tick: number; col: number; row: number }[] = [];
-    // Ticks 2401..2600: conversions 2..21 land on ticks 2410, 2420, ..., 2600.
+    // The next 20 intervals: conversions 2..21, one per SUDDEN_DEATH_INTERVAL_TICKS.
     for (let i = 0; i < 20 * SUDDEN_DEATH_INTERVAL_TICKS; i++) {
       for (const e of game.tick({})) {
         if (e.type === 'arenaShrink') shrinks.push({ tick: game.state.tick, col: e.col, row: e.row });
@@ -206,7 +206,7 @@ describe('sudden death', () => {
     const dirs: (Direction | null)[] = ['up', 'down', 'left', 'right', null];
     const rng = createRng(99);
     const script: Record<string, PlayerInput>[] = [];
-    for (let t = 0; t < 2600; t++) {
+    for (let t = 0; t < SUDDEN_DEATH_START_TICKS + 20 * SUDDEN_DEATH_INTERVAL_TICKS; t++) {
       const inputs: Record<string, PlayerInput> = {};
       for (const id of ids) {
         inputs[id] = { direction: dirs[Math.floor(rng() * dirs.length)], placeBomb: false };

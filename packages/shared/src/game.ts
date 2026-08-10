@@ -227,9 +227,6 @@ class GameImpl implements Game {
         triggerHeld: false,
         skillTriggerHeld: false,
         facing: 'down',
-        momentumDir: null,
-        momentumTicks: 0,
-        turnTicks: 0,
         laneDir: null,
         turnGrace: 0,
         deathTick: null,
@@ -460,9 +457,6 @@ class GameImpl implements Game {
     player.deathTick = this.state.tick;
     clearSkills(player);
     player.actionCooldown = 0;
-    player.turnTicks = 0;
-    player.momentumDir = null;
-    player.momentumTicks = 0;
     events.push({ type: 'playerDied', playerId: player.id, col, row });
   }
 

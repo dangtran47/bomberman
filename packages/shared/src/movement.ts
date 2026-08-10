@@ -1,9 +1,7 @@
 import {
   GRID_HEIGHT,
   GRID_WIDTH,
-  ICE_GLIDE_SPEED_MULT,
-  ICE_GLIDE_TICKS,
-  ICE_TURN_DELAY_TICKS,
+  ICE_SPEED_MULT,
   TICK_RATE,
   kickSlideInterval,
 } from './constants';
@@ -14,7 +12,6 @@ export interface MovementPlayer {
   x: number; y: number; speed: number;
   kickTicks: number;
   frozenTicks: number;
-  momentumDir: Direction | null; momentumTicks: number; turnTicks: number;
   laneDir: Direction | null; turnGrace: number;
 }
 export interface MovementBomb {
@@ -26,10 +23,9 @@ export interface MovementWorld { grid: TileType[][]; ice: boolean[][]; bombs: Mo
 const EPS = 1e-9;
 
 /**
- * Per-tick movement dispatcher. Off ice this is exactly the classic
- * "move while the key is held" behaviour; on ice the player carries a
- * momentum heading that resists turns and keeps gliding once the input is
- * released.
+ * Per-tick movement dispatcher: classic "move while the key is held". Ice
+ * tiles are speed lanes — standing on one scales the tick's movement budget
+ * by ICE_SPEED_MULT; releasing the key stops the player dead everywhere.
  */
 export function stepPlayer(
   world: MovementWorld,
@@ -37,55 +33,9 @@ export function stepPlayer(
   direction: Direction | null,
 ): void {
   if (player.frozenTicks > 0) return; // frozen solid: no movement at all
-  if (!isIce(world, Math.round(player.x), Math.round(player.y))) {
-    player.turnTicks = 0;
-    if (direction) driveIce(world, player, direction);
-    else clearMomentum(player);
-    return;
-  }
-
-  if (direction) {
-    if (player.momentumDir === null || player.momentumDir === direction) {
-      player.turnTicks = 0;
-      driveIce(world, player, direction);
-      return;
-    }
-    // Turning on ice: the old heading holds for a few ticks before it takes.
-    player.turnTicks++;
-    if (player.turnTicks >= ICE_TURN_DELAY_TICKS) {
-      player.turnTicks = 0;
-      driveIce(world, player, direction);
-    } else {
-      driveIce(world, player, player.momentumDir);
-    }
-    return;
-  }
-
-  // Released on ice: glide on in the last heading, decaying linearly.
-  if (player.momentumDir === null || player.momentumTicks <= 0) {
-    clearMomentum(player);
-    return;
-  }
-  const mult = ICE_GLIDE_SPEED_MULT * (player.momentumTicks / ICE_GLIDE_TICKS);
-  const blocked = movePlayer(world, player, player.momentumDir, mult);
-  player.momentumTicks--;
-  if (blocked || player.momentumTicks <= 0) clearMomentum(player);
-}
-
-/** Moves at full speed and (re)charges the glide budget unless a wall stops it. */
-function driveIce(world: MovementWorld, player: MovementPlayer, direction: Direction): void {
-  const blocked = movePlayer(world, player, direction);
-  if (blocked) {
-    clearMomentum(player);
-    return;
-  }
-  player.momentumDir = direction;
-  player.momentumTicks = ICE_GLIDE_TICKS;
-}
-
-function clearMomentum(player: MovementPlayer): void {
-  player.momentumDir = null;
-  player.momentumTicks = 0;
+  if (!direction) return;
+  const boost = isIce(world, Math.round(player.x), Math.round(player.y)) ? ICE_SPEED_MULT : 1;
+  movePlayer(world, player, direction, boost);
 }
 
 function isIce(world: MovementWorld, col: number, row: number): boolean {
@@ -98,7 +48,7 @@ function isIce(world: MovementWorld, col: number, row: number): boolean {
  * must be aligned to the perpendicular lane; if not, the tick's movement
  * budget is spent sliding into the lane the player was already heading for
  * (see `laneAhead`), and any remainder goes into the requested direction.
- * `budgetMult` scales the tick's budget (ice glide); returns true when the
+ * `budgetMult` scales the tick's budget (ice speed lanes); returns true when the
  * player was stopped short, either by the tile ahead or by an unreachable lane.
  */
 function movePlayer(

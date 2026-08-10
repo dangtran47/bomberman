@@ -4,6 +4,7 @@ import {
   BASE_BOMB_COUNT,
   BASE_SPEED,
   BOMB_FUSE_TICKS,
+  EXPLOSION_DURATION_TICKS,
   GRID_HEIGHT,
   GRID_WIDTH,
   MAX_BLAST_RADIUS,
@@ -12,6 +13,7 @@ import {
   POWERUP_TYPE_COUNT,
   POWERUP_WEIGHTS,
   POWERUP_WEIGHT_TOTAL,
+  TICK_RATE,
   powerupTypeForRoll,
 } from '../src/constants';
 import { createGame } from '../src/game';
@@ -30,7 +32,7 @@ const SEED_BIGGER_BLAST = 19;
 const SEED_SPEED = 15;
 const SEED_NO_DROP = 1;
 
-const STEP = BASE_SPEED / 20; // 0.15 tiles per tick at base speed
+const STEP = BASE_SPEED / TICK_RATE; // 0.05 tiles per tick at base speed
 
 const move = (direction: Direction): PlayerInput => ({ direction, placeBomb: false });
 const dropBomb = (): PlayerInput => ({ direction: null, placeBomb: true });
@@ -140,38 +142,40 @@ describe('movement', () => {
 
   it('corner-slides onward into the lane it was already heading for, never back', () => {
     const game = twoPlayerGame();
-    run(game, 2, { p1: move('down') }); // y ~= 0.3, not row-aligned
+    run(game, 6, { p1: move('down') }); // y ~= 0.3, not row-aligned
     run(game, 1, { p1: move('right') });
-    expect(player(game, 'p1').y).toBeCloseTo(0.45, 10); // kept going down, not back to row 0
+    expect(player(game, 'p1').y).toBeCloseTo(7 * STEP, 10); // kept going down, not back to row 0
     expect(player(game, 'p1').x).toBeCloseTo(0, 10); // no horizontal progress yet
-    run(game, 3, { p1: move('right') });
-    expect(player(game, 'p1').y).toBeCloseTo(0.9, 10);
+    run(game, 12, { p1: move('right') });
+    expect(player(game, 'p1').y).toBeCloseTo(19 * STEP, 10);
     run(game, 1, { p1: move('right') });
     expect(player(game, 'p1').y).toBe(1); // snapped exactly into the lane below
-    expect(player(game, 'p1').x).toBeCloseTo(0.05, 10); // leftover budget went right
+    run(game, 1, { p1: move('right') });
+    expect(player(game, 'p1').x).toBeCloseTo(STEP, 10); // aligned now, budget flows right
   });
 
   it('refuses the turn instead of backing up when the committed lane is closed', () => {
     const game = twoPlayerGame();
-    run(game, 2, { p1: move('down') }); // y ~= 0.3, heading for row 1
+    run(game, 6, { p1: move('down') }); // y ~= 0.3, heading for row 1
     game.state.grid[1][0] = TileType.HardBlock; // row 1 shuts behind the commitment
     run(game, 3, { p1: move('right') });
-    expect(player(game, 'p1').y).toBeCloseTo(2 * STEP, 10); // held still, never dragged back
+    expect(player(game, 'p1').y).toBeCloseTo(6 * STEP, 10); // held still, never dragged back
     expect(player(game, 'p1').x).toBe(0);
-    run(game, 2, { p1: move('up') }); // the player resolves it themselves
+    run(game, 7, { p1: move('up') }); // the player resolves it themselves
     expect(player(game, 'p1').y).toBe(0);
     run(game, 1, { p1: move('right') });
     expect(player(game, 'p1').x).toBeCloseTo(STEP, 10);
   });
 
-  it('slides to the nearest lane and spends leftover budget on the new direction', () => {
+  it('slides to the nearest lane and then spends its budget on the new direction', () => {
     const game = twoPlayerGame();
-    run(game, 5, { p1: move('down') }); // y ~= 0.75, nearest lane is row 1
+    run(game, 15, { p1: move('down') }); // y ~= 0.75, nearest lane is row 1
     run(game, 1, { p1: move('right') });
-    expect(player(game, 'p1').y).toBeCloseTo(0.9, 10); // slid down, not up
-    run(game, 1, { p1: move('right') });
+    expect(player(game, 'p1').y).toBeCloseTo(16 * STEP, 10); // slid down, not up
+    run(game, 4, { p1: move('right') });
     expect(player(game, 'p1').y).toBe(1); // snapped to row 1
-    expect(player(game, 'p1').x).toBeCloseTo(0.05, 6); // remainder spent moving right
+    run(game, 1, { p1: move('right') });
+    expect(player(game, 'p1').x).toBeCloseTo(STEP, 6); // budget now spent moving right
   });
 
   it('clamps at the grid edge', () => {
@@ -221,14 +225,14 @@ describe('bombs', () => {
   it('enforces bombCount, freeing a slot once the bomb explodes', () => {
     const game = twoPlayerGame();
     run(game, 1, { p1: dropBomb() }); // tick 1: bomb at (0,0)
-    run(game, 14, { p1: move('down') }); // tick 15: p1 at (0,2), out of blast
-    const rejected = run(game, 1, { p1: dropBomb() }); // tick 16: at bombCount limit
+    run(game, 40, { p1: move('down') }); // tick 41: p1 at (0,2), out of blast
+    const rejected = run(game, 1, { p1: dropBomb() }); // tick 42: at bombCount limit
     expect(ofType(rejected, 'bombPlaced')).toHaveLength(0);
     expect(game.state.bombs).toHaveLength(1);
-    run(game, 44); // tick 60: bomb explodes
+    run(game, BOMB_FUSE_TICKS - 42); // tick 180: bomb explodes
     expect(game.state.bombs).toHaveLength(0);
     expect(player(game, 'p1').activeBombs).toBe(0);
-    const events = run(game, 1, { p1: dropBomb() }); // tick 61: slot free again
+    const events = run(game, 1, { p1: dropBomb() }); // tick 181: slot free again
     expect(ofType(events, 'bombPlaced')).toHaveLength(1);
     expect(game.state.bombs[0]).toMatchObject({ col: 0, row: 2 });
   });
@@ -236,9 +240,9 @@ describe('bombs', () => {
   it('lets the owner walk off the bomb but not re-enter its tile', () => {
     const game = twoPlayerGame();
     run(game, 1, { p1: dropBomb() });
-    run(game, 7, { p1: move('right') }); // walks off the bomb tile
+    run(game, 21, { p1: move('right') }); // walks off the bomb tile
     expect(Math.round(player(game, 'p1').x)).toBe(1);
-    run(game, 7, { p1: move('left') }); // blocked at center of tile 1
+    run(game, 21, { p1: move('left') }); // blocked at center of tile 1
     expect(player(game, 'p1').x).toBe(1);
   });
 
@@ -246,11 +250,11 @@ describe('bombs', () => {
     const game = twoPlayerGame();
     run(game, 1, { p1: dropBomb() });
     const early = [
-      ...run(game, 14, { p1: move('down') }),
-      ...run(game, BOMB_FUSE_TICKS - 16),
-    ]; // ticks 2..59
+      ...run(game, 40, { p1: move('down') }),
+      ...run(game, BOMB_FUSE_TICKS - 42),
+    ]; // ticks 2..179
     expect(ofType(early, 'bombExploded')).toHaveLength(0);
-    const events = run(game, 1); // tick 60
+    const events = run(game, 1); // tick 180
     expect(ofType(events, 'bombExploded')).toHaveLength(1);
   });
 });
@@ -259,8 +263,8 @@ describe('explosions', () => {
   /** Places a bomb at (0,0) on tick 1, walks p1 to safety at (0,2), waits for the blast. */
   function explodeCornerBomb(game: Game): GameEvent[] {
     run(game, 1, { p1: dropBomb() });
-    run(game, 14, { p1: move('down') });
-    return run(game, 45); // last tick is tick 60, when the bomb explodes
+    run(game, 40, { p1: move('down') });
+    return run(game, BOMB_FUSE_TICKS - 41); // last tick is tick 180, when the bomb explodes
   }
 
   it('covers a cross of radius 1, clipped at the grid edge, and expires after its duration', () => {
@@ -274,9 +278,9 @@ describe('explosions', () => {
       '1,0',
     ]);
     expect(explosionTiles(game)).toEqual(['0,0', '0,1', '1,0']);
-    run(game, 9); // ticks 61..69: still burning
+    run(game, EXPLOSION_DURATION_TICKS - 1); // ticks 181..209: still burning
     expect(game.state.explosions).toHaveLength(3);
-    run(game, 1); // tick 70: expired
+    run(game, 1); // tick 210: expired
     expect(game.state.explosions).toEqual([]);
   });
 
@@ -327,18 +331,18 @@ describe('explosions', () => {
     grid[0][2] = TileType.SoftBlock;
     grid[0][3] = TileType.SoftBlock;
     const game = twoPlayerGame(grid, SEED_BIGGER_BLAST);
-    explodeCornerBomb(game); // tick 60: destroys (1,0), drops BiggerBlast there
-    run(game, 10); // tick 70: explosion cleared
-    run(game, 15, { p1: move('up') }); // back to (0,0)
-    const walk = run(game, 7, { p1: move('right') }); // collect at (1,0), stop at soft (2,0)
+    explodeCornerBomb(game); // tick 180: destroys (1,0), drops BiggerBlast there
+    run(game, EXPLOSION_DURATION_TICKS); // tick 210: explosion cleared
+    run(game, 41, { p1: move('up') }); // back to (0,0)
+    const walk = run(game, 21, { p1: move('right') }); // collect at (1,0), stop at soft (2,0)
     expect(ofType(walk, 'powerupCollected')).toHaveLength(1);
     expect(player(game, 'p1').blastRadius).toBe(2);
     expect(player(game, 'p1').x).toBe(1);
-    run(game, 1, { p1: dropBomb() }); // tick 93: radius-2 bomb at (1,0)
+    run(game, 1, { p1: dropBomb() }); // tick 273: radius-2 bomb at (1,0)
     expect(game.state.bombs[0]).toMatchObject({ col: 1, row: 0, blastRadius: 2 });
-    run(game, 7, { p1: move('left') }); // back to (0,0)
-    run(game, 14, { p1: move('down') }); // to (0,2), outside the blast
-    const events = run(game, 38); // last tick is 152: bomb explodes
+    run(game, 21, { p1: move('left') }); // back to (0,0)
+    run(game, 40, { p1: move('down') }); // to (0,2), outside the blast
+    const events = run(game, 118); // last tick is 452: bomb explodes
     expect(ofType(events, 'bombExploded')).toHaveLength(1);
     const tiles = explosionTiles(game);
     expect(tiles).toContain('2,0'); // destroyed soft block is included
@@ -357,21 +361,21 @@ describe('explosions', () => {
     grid[0][1] = TileType.SoftBlock;
     const game = twoPlayerGame(grid, SEED_EXTRA_BOMB);
     run(game, 1, { p1: dropBomb() });
-    run(game, 14, { p1: move('down') });
-    run(game, 45); // tick 60: explosion destroys (1,0), drops ExtraBomb
-    run(game, 10); // tick 70: cleared
-    run(game, 15, { p1: move('up') });
-    run(game, 7, { p1: move('right') }); // collects ExtraBomb at (1,0)
+    run(game, 40, { p1: move('down') });
+    run(game, BOMB_FUSE_TICKS - 41); // tick 180: explosion destroys (1,0), drops ExtraBomb
+    run(game, EXPLOSION_DURATION_TICKS); // tick 210: cleared
+    run(game, 41, { p1: move('up') });
+    run(game, 21, { p1: move('right') }); // collects ExtraBomb at (1,0)
     expect(player(game, 'p1').bombCount).toBe(2);
-    run(game, 1, { p1: dropBomb() }); // tick 93: bomb A at (1,0), explodes tick 152
-    run(game, 7, { p1: move('right') });
-    run(game, 1, { p1: dropBomb() }); // tick 101: bomb B at (2,0), would explode tick 160
+    run(game, 1, { p1: dropBomb() }); // tick 273: bomb A at (1,0), explodes tick 452
+    run(game, 21, { p1: move('right') });
+    run(game, 1, { p1: dropBomb() }); // tick 295: bomb B at (2,0), would explode tick 474
     expect(game.state.bombs).toHaveLength(2);
     expect(player(game, 'p1').activeBombs).toBe(2);
-    run(game, 14, { p1: move('right') }); // retreat to (4,0)
-    const quiet = run(game, 36); // ticks 116..151
+    run(game, 40, { p1: move('right') }); // retreat to (4,0)
+    const quiet = run(game, 116); // ticks 336..451
     expect(ofType(quiet, 'bombExploded')).toHaveLength(0);
-    const events = run(game, 1); // tick 152: A explodes, chain-detonates B
+    const events = run(game, 1); // tick 452: A explodes, chain-detonates B
     expect(ofType(events, 'bombExploded')).toHaveLength(2);
     expect(game.state.bombs).toEqual([]);
     expect(player(game, 'p1').activeBombs).toBe(0);
@@ -383,13 +387,13 @@ describe('explosions', () => {
     const grid = openGrid();
     grid[0][1] = TileType.SoftBlock;
     const game = twoPlayerGame(grid, SEED_BIGGER_BLAST);
-    explodeCornerBomb(game); // tick 60: BiggerBlast spawns at (1,0)
-    run(game, 10); // tick 70: explosion cleared, powerup intact
+    explodeCornerBomb(game); // tick 180: BiggerBlast spawns at (1,0)
+    run(game, EXPLOSION_DURATION_TICKS); // tick 210: explosion cleared, powerup intact
     expect(game.state.powerups).toHaveLength(1);
-    run(game, 15, { p1: move('up') }); // back to (0,0) without touching (1,0)
-    run(game, 1, { p1: dropBomb() }); // tick 86: bomb whose blast covers (1,0)
-    run(game, 14, { p1: move('down') }); // to safety at (0,2)
-    const events = run(game, 45); // last tick is 145: bomb explodes
+    run(game, 41, { p1: move('up') }); // back to (0,0) without touching (1,0)
+    run(game, 1, { p1: dropBomb() }); // tick 252: bomb whose blast covers (1,0)
+    run(game, 40, { p1: move('down') }); // to safety at (0,2)
+    const events = run(game, 139); // last tick is 431: bomb explodes
     expect(ofType(events, 'bombExploded')).toHaveLength(1);
     expect(ofType(events, 'powerupSpawned')).toHaveLength(0);
     expect(game.state.powerups).toEqual([]);
@@ -401,7 +405,7 @@ describe('powerups', () => {
   function collect(type: PowerupType): { game: Game; events: GameEvent[] } {
     const game = twoPlayerGame();
     game.state.powerups.push({ col: 1, row: 0, type });
-    const events = run(game, 7, { p1: move('right') });
+    const events = run(game, 21, { p1: move('right') });
     return { game, events };
   }
 
@@ -434,7 +438,7 @@ describe('powerups', () => {
     for (let col = 1; col <= 8; col++) {
       game.state.powerups.push({ col, row: 0, type: PowerupType.ExtraBomb });
     }
-    run(game, 60, { p1: move('right') }); // walks across all 8 powerups
+    run(game, 180, { p1: move('right') }); // walks across all 8 powerups
     expect(game.state.powerups).toEqual([]);
     expect(player(game, 'p1').bombCount).toBe(MAX_BOMB_COUNT); // 1 + 8 capped at 8
   });
@@ -444,7 +448,7 @@ describe('powerups', () => {
     for (let col = 1; col <= 8; col++) {
       game.state.powerups.push({ col, row: 0, type: PowerupType.BiggerBlast });
     }
-    run(game, 60, { p1: move('right') });
+    run(game, 180, { p1: move('right') });
     expect(player(game, 'p1').blastRadius).toBe(MAX_BLAST_RADIUS); // 1 + 8 capped at 8
   });
 
@@ -453,7 +457,7 @@ describe('powerups', () => {
     for (let col = 1; col <= 7; col++) {
       game.state.powerups.push({ col, row: 0, type: PowerupType.Speed });
     }
-    run(game, 80, { p1: move('right') });
+    run(game, 150, { p1: move('right') });
     expect(game.state.powerups).toEqual([]);
     expect(player(game, 'p1').speed).toBe(MAX_SPEED); // 3 + 3.5 capped at 6
   });
@@ -498,25 +502,25 @@ describe('death and win', () => {
   it('keeps a dead player bomb ticking, ignores dead player input, and frees the slot', () => {
     const game = createGame({ seed: SEED_NO_DROP, playerIds: ['p1', 'p2', 'p3'], grid: openGrid() });
     // p3 walks up column 0 while p1 walks down, then p3 bombs p1's tile.
-    run(game, 20, { p1: move('down'), p3: move('up') }); // p1 (0,3) lane-exact, p3 (0,9)
-    run(game, 8, { p1: move('right'), p3: move('up') }); // p1 to (1,3)
-    run(game, 23, { p3: move('up') }); // tick 51: p3 at (0,4)
-    run(game, 1, { p3: dropBomb() }); // tick 52: p3 bomb at (0,4), explodes tick 111
-    run(game, 14, { p3: move('down') }); // p3 retreats to (0,6)
-    run(game, 1, { p1: dropBomb() }); // tick 67: p1 bomb at (1,3), explodes tick 126
-    run(game, 8, { p1: move('left') }); // tick 75: p1 back on (0,3), inside p3's blast
-    run(game, 35); // tick 110: nothing yet
-    const deathTick = run(game, 1); // tick 111: p3's bomb kills p1
+    run(game, 60, { p1: move('down'), p3: move('up') }); // p1 (0,3) lane-exact, p3 (0,9)
+    run(game, 24, { p1: move('right'), p3: move('up') }); // p1 to (1,3)
+    run(game, 69, { p3: move('up') }); // tick 153: p3 at (0,4)
+    run(game, 1, { p3: dropBomb() }); // tick 154: p3 bomb at (0,4), explodes tick 333
+    run(game, 42, { p3: move('down') }); // p3 retreats to (0,6)
+    run(game, 1, { p1: dropBomb() }); // tick 197: p1 bomb at (1,3), explodes tick 376
+    run(game, 26, { p1: move('left') }); // tick 223: p1 back on (0,3), inside p3's blast
+    run(game, 109); // tick 332: nothing yet
+    const deathTick = run(game, 1); // tick 333: p3's bomb kills p1
     expect(ofType(deathTick, 'playerDied')).toEqual([
       expect.objectContaining({ playerId: 'p1' }),
     ]);
     expect(game.state.status).toBe('running'); // p2 and p3 still alive
     expect(game.state.bombs).toHaveLength(1); // dead p1's bomb still ticking
     expect(player(game, 'p1').activeBombs).toBe(1);
-    const posthumous = run(game, 15, { p1: { direction: 'right', placeBomb: true } }); // through tick 126
+    const posthumous = run(game, 43, { p1: { direction: 'right', placeBomb: true } }); // through tick 376
     expect(player(game, 'p1').x).toBe(0); // dead input ignored
     expect(ofType(posthumous, 'bombPlaced')).toHaveLength(0);
-    const explode = ofType(posthumous, 'bombExploded'); // tick 126: p1's bomb goes off
+    const explode = ofType(posthumous, 'bombExploded'); // tick 376: p1's bomb goes off
     expect(explode).toHaveLength(1);
     expect(explode[0]).toMatchObject({ col: 1, row: 3 });
     expect(ofType(posthumous, 'playerDied')).toHaveLength(0); // corpse not re-killed

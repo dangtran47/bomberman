@@ -1,11 +1,16 @@
 export const GRID_WIDTH = 15;
 export const GRID_HEIGHT = 13;
 
-export const TICK_RATE = 20; // ticks per second
-export const TICK_MS = 50;
+export const TICK_RATE = 60; // ticks per second
+export const TICK_MS = 1000 / TICK_RATE;
 
-export const BOMB_FUSE_TICKS = 60; // 3s
-export const EXPLOSION_DURATION_TICKS = 10; // 0.5s
+/** Ticks for a real-time duration in seconds; keeps timings stable across tick-rate changes. */
+export function secs(s: number): number {
+  return Math.round(s * TICK_RATE);
+}
+
+export const BOMB_FUSE_TICKS = secs(3);
+export const EXPLOSION_DURATION_TICKS = secs(0.5);
 
 export const BASE_SPEED = 3; // tiles/sec
 export const SPEED_INCREMENT = 0.5;
@@ -44,8 +49,8 @@ export function powerupTypeForRoll(roll: number): number {
 
 export const CHARACTER_COUNT = 6;
 
-export const KICK_DURATION_TICKS = 300; // 15s at 20tps
-export const KICK_WARNING_TICKS = 60; // last 3s
+export const KICK_DURATION_TICKS = secs(15);
+export const KICK_WARNING_TICKS = secs(3); // warning window at the end
 export const KICK_SLIDE_SPEED_MULT = 3; // a kicked bomb travels at ~3x the kicker's tiles/sec
 
 /** Ticks between tile-steps for a bomb kicked by a player moving `speed` tiles/sec. */
@@ -53,27 +58,24 @@ export function kickSlideInterval(speed: number): number {
   return Math.max(1, Math.round(TICK_RATE / (speed * KICK_SLIDE_SPEED_MULT)));
 }
 
-/** Ice drift: how long a released heading keeps gliding, and how it decays. */
-export const ICE_GLIDE_TICKS = 12;
-export const ICE_GLIDE_SPEED_MULT = 1;
-/** Ticks of the old heading before a turn takes effect on ice. */
-export const ICE_TURN_DELAY_TICKS = 3;
+/** Ice tiles are speed lanes: movement budget multiplier while standing on ice. */
+export const ICE_SPEED_MULT = 1.5;
 
 export const GUN_AMMO_PER_PICKUP = 2;
 export const HAMMER_USES_PER_PICKUP = 3;
 export const MINE_AMMO_PER_PICKUP = 2;
-export const SKILL_ACTION_COOLDOWN_TICKS = 6; // shared gun/hammer cooldown
+export const SKILL_ACTION_COOLDOWN_TICKS = secs(0.3); // shared gun/hammer cooldown
 
-/** Shield immunity window (7s at 20tps); blocks every attack except sudden death. */
-export const SHIELD_DURATION_TICKS = 140;
-export const SHIELD_WARNING_TICKS = 40; // last 2s: the client blinks the tint
+/** Shield immunity window (7s); blocks every attack except sudden death. */
+export const SHIELD_DURATION_TICKS = secs(7);
+export const SHIELD_WARNING_TICKS = secs(2); // last 2s: the client blinks the tint
 
 /** Mine lifetime, counted from placement: 2s inert, then 3s armed, then buried. */
-export const MINE_ARM_TICKS = 40;
-export const MINE_BURY_TICKS = 100;
+export const MINE_ARM_TICKS = secs(2);
+export const MINE_BURY_TICKS = secs(5);
 
 /** Freeze-time pickup: every other alive player is frozen this long. */
-export const FREEZE_DURATION_TICKS = 60; // 3s at 20tps
+export const FREEZE_DURATION_TICKS = secs(3);
 
 /** A mine's phase from its age: 0 inert (harmless), 1 armed, 2 buried. */
 export function minePhase(ticks: number): 0 | 1 | 2 {
@@ -84,10 +86,12 @@ export function minePhase(ticks: number): 0 | 1 | 2 {
 // Bot combat nerf: when a weapon is off cooldown and an enemy is lined up, the
 // bot only attacks this fraction of ticks (rolls its rng, else holds fire for a
 // tick). Digging soft blocks is unaffected. Lower = weaker bot, more dodge room.
-export const BOT_HAMMER_ATTACK_CHANCE = 0.3; // melee, priority weapon -> harder nerf
-export const BOT_GUN_ATTACK_CHANCE = 0.5;
+// Chances are per tick, so they scale with TICK_RATE: these keep the same
+// real-time attack cadence the 20Hz values (0.3 / 0.5) had.
+export const BOT_HAMMER_ATTACK_CHANCE = 0.1; // melee, priority weapon -> harder nerf
+export const BOT_GUN_ATTACK_CHANCE = 0.17;
 
-export const SUDDEN_DEATH_START_TICKS = 2400; // 2min at 20tps
-export const SUDDEN_DEATH_INTERVAL_TICKS = 10; // one tile per 0.5s
+export const SUDDEN_DEATH_START_TICKS = secs(120);
+export const SUDDEN_DEATH_INTERVAL_TICKS = secs(0.5); // one tile per 0.5s
 /** Border rings converted before the shrink stops (leaves rows 4-8 x cols 4-10 open). */
 export const SUDDEN_DEATH_RINGS = 4;

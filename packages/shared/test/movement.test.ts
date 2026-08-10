@@ -17,7 +17,6 @@ function boxGrid(): TileType[][] {
 function freshPlayer(x: number, y: number): MovementPlayer {
   return {
     x, y, speed: 3, kickTicks: 0, frozenTicks: 0,
-    momentumDir: null, momentumTicks: 0, turnTicks: 0,
     laneDir: null, turnGrace: 0,
   };
 }

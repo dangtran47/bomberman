@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   BASE_BOMB_COUNT,
+  BASE_SPEED,
+  BOMB_FUSE_TICKS,
   GRID_HEIGHT,
   GRID_WIDTH,
   GUN_AMMO_PER_PICKUP,
   HAMMER_USES_PER_PICKUP,
   KICK_DURATION_TICKS,
   SKILL_ACTION_COOLDOWN_TICKS,
+  TICK_RATE,
 } from '../src/constants';
 import { createGame } from '../src/game';
 import type { Game, GameEvent } from '../src/game';
@@ -16,6 +19,9 @@ import type { Direction, PlayerInput } from '../src/types';
 // Same mined seeds as game.test.ts: the FIRST powerup roll of the run is known.
 const SEED_EXTRA_BOMB = 7; // drops ExtraBomb
 const SEED_NO_DROP = 1; // first roll fails POWERUP_DROP_CHANCE
+
+/** Ticks to walk one tile at base speed (with one spare tick of margin where used). */
+const WALK_TICKS = TICK_RATE / BASE_SPEED;
 
 const move = (direction: Direction): PlayerInput => ({ direction, placeBomb: false });
 const act = (extra: Partial<PlayerInput>): PlayerInput => ({
@@ -65,7 +71,7 @@ describe('pickups', () => {
   it('Gun grants a full magazine and re-pickup refills it', () => {
     const game = twoPlayerGame();
     game.state.powerups.push({ col: 1, row: 0, type: PowerupType.Gun });
-    const events = run(game, 7, { p1: move('right') });
+    const events = run(game, WALK_TICKS + 1, { p1: move('right') });
     expect(player(game, 'p1').gunAmmo).toBe(GUN_AMMO_PER_PICKUP);
     expect(ofType(events, 'powerupCollected')).toEqual([
       expect.objectContaining({ playerId: 'p1', powerupType: PowerupType.Gun }),
@@ -81,7 +87,7 @@ describe('pickups', () => {
   it('Hammer grants a full set of swings', () => {
     const game = twoPlayerGame();
     game.state.powerups.push({ col: 1, row: 0, type: PowerupType.Hammer });
-    run(game, 7, { p1: move('right') });
+    run(game, WALK_TICKS + 1, { p1: move('right') });
     expect(player(game, 'p1').hammerUses).toBe(HAMMER_USES_PER_PICKUP);
   });
 });
@@ -170,7 +176,7 @@ describe('gun firing', () => {
     grid[0][5] = TileType.SoftBlock;
     const game = shooterGame(grid, SEED_NO_DROP);
     game.state.powerups.push({ col: 3, row: 0, type: PowerupType.Speed });
-    run(game, 1, { p1: act({ placeBomb: true }) }); // bomb at (0,0), fuse 60
+    run(game, 1, { p1: act({ placeBomb: true }) }); // bomb at (0,0), full fuse
     player(game, 'p1').gunAmmo = 1; // armed only after bombing: space is the skill trigger
 
     const events = run(game, 1, { p1: act({ fireGun: true }) });
@@ -236,15 +242,10 @@ describe('gun firing', () => {
     p2.gunAmmo = 2;
     p2.hammerUses = 3;
     p2.actionCooldown = 4;
-    p2.momentumDir = 'left';
-    p2.momentumTicks = 5;
-    p2.turnTicks = 2;
 
     run(game, 1, { p1: act({ fireGun: true }) });
     expect(p2.alive).toBe(false);
     expect([p2.kickTicks, p2.gunAmmo, p2.hammerUses, p2.actionCooldown]).toEqual([0, 0, 0, 0]);
-    expect(p2.momentumDir).toBeNull();
-    expect([p2.momentumTicks, p2.turnTicks]).toEqual([0, 0]);
   });
 });
 
@@ -337,7 +338,7 @@ describe('exclusive skills', () => {
   /** Walks p1 right from (0,0) onto a single powerup parked at (1,0). */
   function grab(game: Game, type: PowerupType): void {
     game.state.powerups.push({ col: 1, row: 0, type });
-    run(game, 7, { p1: move('right') });
+    run(game, WALK_TICKS + 1, { p1: move('right') });
   }
 
   it('a new gun pickup drops the kick and the hammer', () => {
@@ -471,7 +472,7 @@ describe('space is the skill trigger while armed', () => {
     p1.gunAmmo = 1;
 
     // One long hold: the shot empties the gun, the key never comes back up.
-    const events = run(game, 10, { p1: act({ placeBomb: true }) });
+    const events = run(game, SKILL_ACTION_COOLDOWN_TICKS + 4, { p1: act({ placeBomb: true }) });
 
     expect(ofType(events, 'gunFired')).toHaveLength(1);
     expect(ofType(events, 'bombPlaced')).toHaveLength(0);
@@ -485,7 +486,7 @@ describe('space is the skill trigger while armed', () => {
     const p1 = player(game, 'p1');
     p1.hammerUses = 1;
 
-    const events = run(game, 10, { p1: act({ placeBomb: true }) });
+    const events = run(game, SKILL_ACTION_COOLDOWN_TICKS + 4, { p1: act({ placeBomb: true }) });
 
     expect(ofType(events, 'hammerSwung')).toHaveLength(1);
     expect(ofType(events, 'bombPlaced')).toHaveLength(0);
@@ -505,7 +506,7 @@ describe('hammering a bomb', () => {
     const p1 = player(game, 'p1');
 
     run(game, 1, { p1: act({ placeBomb: true }) }); // bomb at (0,0)
-    run(game, 7, { p1: move('right') }); // step off it, onto (1,0)
+    run(game, WALK_TICKS + 1, { p1: move('right') }); // step off it, onto (1,0)
     expect(Math.round(p1.x)).toBe(1);
     expect(game.state.bombs).toHaveLength(1);
 
@@ -526,7 +527,7 @@ describe('shooting a bomb', () => {
     grid[0][5] = TileType.SoftBlock;
     const game = shooterGame(grid, SEED_NO_DROP);
     run(game, 1, { p1: act({ placeBomb: true }) }); // bomb at (0,0)
-    run(game, 14, { p1: move('right') }); // walk to (2,0), leaving it behind
+    run(game, 2 * WALK_TICKS + 1, { p1: move('right') }); // walk to (2,0), leaving it behind
     const p1 = player(game, 'p1');
     expect(Math.round(p1.x)).toBe(2);
     p1.facing = 'left';
@@ -553,7 +554,7 @@ describe('shooting a bomb', () => {
       col: 3,
       row: 6,
       ownerId: 'p2',
-      fuseTicks: 60,
+      fuseTicks: BOMB_FUSE_TICKS,
       blastRadius: 1,
       slideDC: 0,
       slideDR: 0,
