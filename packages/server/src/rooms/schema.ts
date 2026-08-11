@@ -40,6 +40,8 @@ export class BombSchema extends Schema {
   @type('number') col = 0;
   @type('number') row = 0;
   @type('string') ownerId = '';
+  /** Owner still on the bomb's tile: clients let them (and nobody else) overlap it. */
+  @type('boolean') ownerOnTile = true;
   @type('number') fuseTicks = 0;
   @type('number') blastRadius = 1;
   @type('number') slideInterval = 0;
@@ -135,6 +137,8 @@ export function copySimToSchema(sim: GameState, out: RoomState): void {
     bs.row = bomb.row;
     bs.fuseTicks = bomb.fuseTicks;
     bs.slideInterval = bomb.slideInterval;
+    // Flips at most once per bomb; guard the write so idle bombs cost no delta.
+    if (bs.ownerOnTile !== bomb.ownerOnTile) bs.ownerOnTile = bomb.ownerOnTile;
   }
 
   const liveMineIds = new Set(sim.mines.map((m) => String(m.id)));

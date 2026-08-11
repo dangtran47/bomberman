@@ -59,6 +59,7 @@ function dueBomb(col: number, row: number, ownerId = 'p1'): Bomb {
     col,
     row,
     ownerId,
+    ownerOnTile: false,
     fuseTicks: 1,
     blastRadius: 1,
     slideDC: 0,

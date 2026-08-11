@@ -19,6 +19,7 @@ function emptyIce(): boolean[][] {
 }
 function spawn(): PredictedPlayer {
   return {
+    id: 'p0',
     x: 1, y: 1, speed: 3, kickTicks: 0, frozenTicks: 0,
     laneDir: null, turnGrace: 0,
     alive: true, bombCount: 1, activeBombs: 0,
@@ -143,6 +144,69 @@ describe('Predictor', () => {
     const lockedX = p.player.x;
     p.step('right', false, boxGrid(), emptyIce(), []);
     expect(p.player.x).toBe(lockedX);
+  });
+
+  it('revokes its predicted bomb once the local player leaves that tile', () => {
+    const p = new Predictor(spawn());
+    p.step(null, true, boxGrid(), emptyIce(), []);
+    expect(p.bombs[0].ownerOnTile).toBe(true);
+    for (let i = 0; i < 8; i++) p.step('right', false, boxGrid(), emptyIce(), []); // x = 1.4
+    expect(p.bombs[0].ownerOnTile).toBe(true);
+    for (let i = 0; i < 4; i++) p.step('right', false, boxGrid(), emptyIce(), []); // x = 1.6
+    expect(p.bombs[0].ownerOnTile).toBe(false);
+  });
+
+  it('predicts the place-and-turn on the own bomb tile exactly as the sim does', () => {
+    const inputs = Array.from({ length: 6 }, () => ({
+      direction: 'right' as Direction | null,
+      placeBomb: true,
+      pingMs: 200,
+    }));
+    const start = { x: 5, y: 6.8, laneDir: 'up' as Direction | null };
+
+    const p = new Predictor({ ...spawn(), ...start });
+    for (const i of inputs) p.step(i.direction, i.placeBomb, boxGrid(), emptyIce(), [], i.pingMs);
+    expect(p.player.y).toBeCloseTo(7, 9); // snapped onto the bombed junction
+
+    const game = createGame({ seed: 1, playerIds: ['p0', 'p1'], grid: boxGrid() });
+    Object.assign(game.state.players[0], start);
+    for (const i of inputs) game.tick({ p0: i });
+    const sim = game.state.players[0];
+    expect(p.player.x).toBeCloseTo(sim.x, 9);
+    expect(p.player.y).toBeCloseTo(sim.y, 9);
+  });
+
+  it('replays the place-and-turn after an ack without correcting', () => {
+    const inputs = Array.from({ length: 6 }, () => ({
+      direction: 'right' as Direction | null,
+      placeBomb: true,
+      pingMs: 200,
+    }));
+    const start = { x: 5, y: 6.8, laneDir: 'up' as Direction | null };
+
+    const p = new Predictor({ ...spawn(), ...start });
+    for (const i of inputs) p.step(i.direction, i.placeBomb, boxGrid(), emptyIce(), [], i.pingMs);
+
+    // Server ran the same inputs and acked the first one; its bomb is now an
+    // obstacle, still owned-on-tile, so the replay must stay exempt from it.
+    const game = createGame({ seed: 1, playerIds: ['p0', 'p1'], grid: boxGrid() });
+    Object.assign(game.state.players[0], start);
+    game.tick({ p0: inputs[0] });
+    const serverBombs = game.state.bombs.map((b) => ({
+      col: b.col,
+      row: b.row,
+      ownerId: b.ownerId,
+      ownerOnTile: b.ownerOnTile,
+    }));
+    const err = p.reconcile(
+      { ...spawn(), ...pickPredicted(game.state.players[0]) },
+      1,
+      boxGrid(),
+      emptyIce(),
+      serverBombs,
+    );
+    expect(err.dx).toBeCloseTo(0, 9);
+    expect(err.dy).toBeCloseTo(0, 9);
   });
 
   it('stops predicting once dead', () => {

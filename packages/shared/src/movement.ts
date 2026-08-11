@@ -10,6 +10,7 @@ import { TileType } from './types';
 import type { Direction } from './types';
 
 export interface MovementPlayer {
+  id: string; // identifies the mover to the bomb-ownership rule
   x: number; y: number; speed: number;
   kickTicks: number;
   frozenTicks: number;
@@ -17,6 +18,10 @@ export interface MovementPlayer {
 }
 export interface MovementBomb {
   col: number; row: number;
+  ownerId: string;
+  /** Owner has been on the tile continuously since placement; only they may
+   * overlap the bomb, and only until they leave (the revoke is permanent). */
+  ownerOnTile: boolean;
   slideDC: number; slideDR: number; slideCooldown: number; slideInterval: number;
 }
 export interface MovementWorld { grid: TileType[][]; ice: boolean[][]; bombs: MovementBomb[]; }
@@ -70,7 +75,7 @@ function applyTurnGrace(
   if (offset <= EPS || offset > player.turnGrace + EPS) return null;
   const col = horizontal ? Math.round(player.x) : junction;
   const row = horizontal ? junction : Math.round(player.y);
-  if (!canEnter(world, col, row)) return null;
+  if (!canEnter(world, col, row, player.id)) return null;
   if (horizontal) {
     player.y = junction;
     return { dx: 0, dy: junction - perp };
@@ -126,12 +131,19 @@ function movePlayer(
   const sign = direction === 'down' || direction === 'right' ? 1 : -1;
   const pos = horizontal ? player.x : player.y;
   const cur = Math.round(pos);
+  const curCol = horizontal ? cur : Math.round(player.x);
+  const curRow = horizontal ? Math.round(player.y) : cur;
+  // Overlapping a bomb tile we are not exempt from: retreat only. The side we
+  // came in by was open when the bomb appeared, so backing out always works,
+  // while anything center-ward — walking through it included — is refused.
+  // Never kicks: a bomb underfoot is not a bomb ahead.
+  if (sign * (cur - pos) > EPS && blockingBomb(world, curCol, curRow, player.id)) return true;
   const target = pos + sign * budget;
-  const nextCol = horizontal ? cur + sign : Math.round(player.x);
-  const nextRow = horizontal ? Math.round(player.y) : cur + sign;
+  const nextCol = horizontal ? cur + sign : curCol;
+  const nextRow = horizontal ? curRow : cur + sign;
   let next: number;
   let blocked = false;
-  if (canEnter(world, nextCol, nextRow)) {
+  if (canEnter(world, nextCol, nextRow, player.id)) {
     next = target;
   } else {
     blocked = true;
@@ -188,22 +200,42 @@ function laneAhead(
     (horizontal ? commit === 'up' || commit === 'down' : commit === 'left' || commit === 'right');
   if (!perpendicular) return nearest; // no commitment to honour; keep the classic slide
   const lane = commit === 'down' || commit === 'right' ? Math.ceil(perp) : Math.floor(perp);
-  if (lane === nearest) return lane; // already past the halfway point, so already inside that tile
-
   const col = horizontal ? Math.round(player.x) : lane;
   const row = horizontal ? lane : Math.round(player.y);
-  return canEnter(world, col, row) ? lane : null;
+  // Already past the halfway point, so already inside that tile: the tile needs
+  // no entry check, but settling onto its lane is center-ward motion, which a
+  // bomb we are not exempt from refuses like any other center-ward move.
+  if (lane === nearest) return blockingBomb(world, col, row, player.id) ? null : lane;
+  return canEnter(world, col, row, player.id) ? lane : null;
 }
 
 /**
- * A tile can be entered if it is in bounds, is floor, and holds no bomb.
- * Only the tile ahead is ever checked, so a player still standing on their
- * own just-placed bomb can walk off it but cannot re-enter once gone.
+ * A tile can be entered if it is in bounds, is floor, and holds no bomb the
+ * mover is walled by. Pathing-style callers omit `moverId`, which makes every
+ * bomb block.
  */
-export function canEnter(world: MovementWorld, col: number, row: number): boolean {
+export function canEnter(
+  world: MovementWorld,
+  col: number,
+  row: number,
+  moverId?: string,
+): boolean {
   if (col < 0 || col >= GRID_WIDTH || row < 0 || row >= GRID_HEIGHT) return false;
   if (world.grid[row][col] !== TileType.Floor) return false;
-  return !world.bombs.some((b) => b.col === col && b.row === row);
+  return !blockingBomb(world, col, row, moverId);
+}
+
+/** The bomb on that tile this mover may not overlap: the owner is exempt from
+ * their own bomb until they leave its tile, everyone else never is. */
+function blockingBomb(
+  world: MovementWorld,
+  col: number,
+  row: number,
+  moverId?: string,
+): MovementBomb | undefined {
+  return world.bombs.find(
+    (b) => b.col === col && b.row === row && !(b.ownerOnTile && b.ownerId === moverId),
+  );
 }
 
 function bombAt(world: MovementWorld, col: number, row: number): MovementBomb | undefined {

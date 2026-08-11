@@ -35,7 +35,7 @@ import { GamepadInput } from '../gamepad';
 import { INTERP_DELAY_MS, SnapshotBuffer } from '../interpolation';
 import type { GameRoomConnection, NetPlayer, NetRoomState } from '../net';
 import { Predictor } from '../prediction';
-import type { PredictedPlayer } from '../prediction';
+import type { Obstacle, PredictedPlayer } from '../prediction';
 import {
   FREEZE_TINT,
   KICK_TINT,
@@ -319,9 +319,20 @@ interface SkillBadge {
   count: Phaser.GameObjects.Text | null;
 }
 
+/** Synced bombs as movement obstacles; the ownership flags decide whose way
+ * each one is in (its owner walks off their own until they leave the tile). */
+function serverObstacles(s: NetRoomState): Obstacle[] {
+  const bombs: Obstacle[] = [];
+  s.bombs.forEach((b) =>
+    bombs.push({ col: b.col, row: b.row, ownerId: b.ownerId, ownerOnTile: b.ownerOnTile }),
+  );
+  return bombs;
+}
+
 /** Rebase snapshot of our own synced player, '' mapped back to null. */
 function predictedFromNet(p: NetPlayer): PredictedPlayer {
   return {
+    id: p.id,
     x: p.x,
     y: p.y,
     speed: p.speed,
@@ -801,14 +812,12 @@ export class GameScene extends Phaser.Scene {
     if (botDirectView && this.predictor && own) {
       Object.assign(this.predictor.player, predictedFromNet(own));
     } else if (this.predictor && own && own.lastInputSeq !== this.lastAcked) {
-      const serverBombs: { col: number; row: number }[] = [];
-      room.state.bombs.forEach((b) => serverBombs.push({ col: b.col, row: b.row }));
       const err = this.predictor.reconcile(
         predictedFromNet(own),
         own.lastInputSeq,
         this.grid!,
         this.iceMask,
-        serverBombs,
+        serverObstacles(room.state),
       );
       this.predictionError.x += err.dx;
       this.predictionError.y += err.dy;
@@ -861,8 +870,7 @@ export class GameScene extends Phaser.Scene {
   /** One predicted client tick: advance the local player and send its input. */
   private stepOnline(direction: Direction | null, bombHeld: boolean): void {
     const room = this.connection!.room;
-    const serverBombs: { col: number; row: number }[] = [];
-    room.state.bombs.forEach((b) => serverBombs.push({ col: b.col, row: b.row }));
+    const serverBombs = serverObstacles(room.state);
 
     let seq = 0;
     if (this.predictor) {

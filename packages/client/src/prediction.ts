@@ -34,11 +34,17 @@ export interface PredictedBomb {
   col: number;
   row: number;
   fuseTicks: number;
+  /** Owned by the local player and still under their feet, so only they may
+   * overlap it; revoked (for good) the tick they leave the tile. */
+  ownerOnTile: boolean;
 }
 
-interface Obstacle {
+/** A bomb the movement code must see: the server's, or one we placed locally. */
+export interface Obstacle {
   col: number;
   row: number;
+  ownerId: string;
+  ownerOnTile: boolean;
 }
 
 /**
@@ -128,6 +134,13 @@ export class Predictor {
       bombs: this.obstacles(serverBombs).map(asMovementBomb),
     };
     this.lastGraceSnap = stepPlayer(world, this.player, input.direction);
+    // Same revoke the server applies after movement; it lives here so a
+    // reconcile replay reproduces it tick for tick.
+    const col = Math.round(this.player.x);
+    const row = Math.round(this.player.y);
+    for (const bomb of this.bombs) {
+      if (bomb.ownerOnTile && (bomb.col !== col || bomb.row !== row)) bomb.ownerOnTile = false;
+    }
     if (this.player.frozenTicks > 0) this.player.frozenTicks--;
   }
 
@@ -137,15 +150,25 @@ export class Predictor {
     if (this.player.activeBombs >= this.player.bombCount) return;
     if (grid[row]?.[col] !== TileType.Floor) return;
     if (this.obstacles(serverBombs).some((o) => o.col === col && o.row === row)) return;
-    this.bombs.push({ id: -seq, col, row, fuseTicks: BOMB_FUSE_TICKS });
+    this.bombs.push({ id: -seq, col, row, fuseTicks: BOMB_FUSE_TICKS, ownerOnTile: true });
     this.player.activeBombs++;
   }
 
   private obstacles(serverBombs: Obstacle[]): Obstacle[] {
-    return [...serverBombs, ...this.bombs];
+    const own = this.player.id;
+    return [...serverBombs, ...this.bombs.map((b) => ({ ...b, ownerId: own }))];
   }
 }
 
 function asMovementBomb(o: Obstacle): MovementBomb {
-  return { col: o.col, row: o.row, slideDC: 0, slideDR: 0, slideCooldown: 0, slideInterval: 0 };
+  return {
+    col: o.col,
+    row: o.row,
+    ownerId: o.ownerId,
+    ownerOnTile: o.ownerOnTile,
+    slideDC: 0,
+    slideDR: 0,
+    slideCooldown: 0,
+    slideInterval: 0,
+  };
 }

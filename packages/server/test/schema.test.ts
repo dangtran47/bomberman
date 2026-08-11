@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MINE_ARM_TICKS, MINE_BURY_TICKS, createGame } from '@bomberman/shared';
-import { PlayerSchema, RoomState, copySimToSchema } from '../src/rooms/schema';
+import { BombSchema, PlayerSchema, RoomState, copySimToSchema } from '../src/rooms/schema';
 
 function makeRoomState(playerIds: string[]): RoomState {
   const state = new RoomState();
@@ -132,6 +132,42 @@ describe('copySimToSchema', () => {
     copySimToSchema(game.state, state);
     expect(state.bombs.get(String(simBomb.id))).toBe(instance); // same schema object, delta-friendly
     expect(instance.fuseTicks).toBe(before - 1);
+  });
+
+  it('mirrors ownerOnTile and only writes it when the sim flips it', () => {
+    const game = createGame({ seed: 42, playerIds: ['p0', 'p1'] });
+    const state = makeRoomState(['p0', 'p1']);
+    game.tick({ p0: { direction: null, placeBomb: true } });
+    copySimToSchema(game.state, state);
+
+    const simBomb = game.state.bombs[0];
+    const bs = state.bombs.get(String(simBomb.id))!;
+    expect(bs.ownerOnTile).toBe(true);
+
+    // Count writes through the schema's own accessor: an idle bomb must cost
+    // no delta, so the mirror is write-guarded like the mine phase.
+    const desc = Object.getOwnPropertyDescriptor(bs, 'ownerOnTile')!;
+    let writes = 0;
+    Object.defineProperty(bs, 'ownerOnTile', {
+      configurable: true,
+      get: desc.get,
+      set(value: boolean) {
+        writes++;
+        desc.set!.call(bs, value);
+      },
+    });
+
+    copySimToSchema(game.state, state);
+    expect(writes).toBe(0);
+
+    simBomb.ownerOnTile = false;
+    copySimToSchema(game.state, state);
+    expect(bs.ownerOnTile).toBe(false);
+    expect(writes).toBe(1);
+  });
+
+  it('defaults a fresh BombSchema to owned-on-tile', () => {
+    expect(new BombSchema().ownerOnTile).toBe(true);
   });
 
   it('removes bombs that exploded and mirrors explosion cells', () => {

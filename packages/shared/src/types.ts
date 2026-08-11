@@ -57,6 +57,9 @@ export interface Bomb {
   col: number;
   row: number;
   ownerId: string;
+  /** Owner has stood on the tile since placement: they alone may overlap the
+   * bomb, and only until they step off it (never granted again). */
+  ownerOnTile: boolean;
   fuseTicks: number;
   blastRadius: number;
   slideDC: number; // slideDC===0 && slideDR===0 => stationary

@@ -54,6 +54,7 @@ describe('createBot', () => {
       col: 0,
       row: 1,
       ownerId: 'p2',
+      ownerOnTile: false,
       fuseTicks: BOMB_FUSE_TICKS,
       blastRadius: 2,
       slideDC: 0,

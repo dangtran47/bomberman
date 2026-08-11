@@ -58,6 +58,7 @@ describe('turn grace', () => {
       bombs: [],
     };
     const p = {
+      id: 'p1',
       x: 5.3, y: 7, speed: 3, kickTicks: 0, frozenTicks: 0,
       laneDir: 'right' as const, turnGrace: 0.3,
     };
@@ -68,6 +69,25 @@ describe('turn grace', () => {
 
     // Aligned now: the next tick moves normally and reports no snap.
     expect(stepPlayer(world, p, 'up')).toBeNull();
+  });
+
+  it('snaps onto the junction the player just bombed instead of overshooting', () => {
+    // Reported bug: bombing while running up past row 7, then turning right.
+    // The bomb lands on the player's own tile, and the snap onto it is only
+    // allowed because the owner is exempt from their own fresh bomb.
+    const g = game();
+    const p = p1(g);
+    p.x = 5;
+    p.y = 6.8;
+    p.laneDir = 'up';
+    g.tick({ p1: { direction: 'right', placeBomb: true, pingMs: 200 } });
+    expect(g.state.bombs[0]).toMatchObject({ col: 5, row: 7 });
+    expect(p.y).toBeCloseTo(7, 6); // snapped back onto the junction row
+    expect(p.x).toBeGreaterThan(5); // and turned this very tick
+
+    // Holding right keeps it on row 7 instead of sliding on to row 6.
+    for (let i = 0; i < 20; i++) g.tick({ p1: { direction: 'right', placeBomb: true, pingMs: 200 } });
+    expect(p.y).toBeCloseTo(7, 6);
   });
 
   it('is inert offline (no pingMs -> grace 0 -> forward slide unchanged)', () => {

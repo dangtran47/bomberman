@@ -289,6 +289,7 @@ class GameImpl implements Game {
 
     this.ageExplosions();
     this.moveSlidingBombs();
+    this.revokeBombOwnership();
     this.detonateDueBombs(events);
     this.tickMines(events);
     this.applySuddenDeath(events);
@@ -308,6 +309,7 @@ class GameImpl implements Game {
       col,
       row,
       ownerId: player.id,
+      ownerOnTile: true, // the placement tile is the owner's rounded tile
       fuseTicks: BOMB_FUSE_TICKS,
       blastRadius: player.blastRadius,
       slideDC: 0,
@@ -498,6 +500,24 @@ class GameImpl implements Game {
         bomb.row = nextRow;
         bomb.slideCooldown = bomb.slideInterval || 1;
       }
+    }
+  }
+
+  /**
+   * The owner's exemption from their own bomb lasts exactly as long as they
+   * stay on its tile: walking off, dying, leaving the match, or the bomb being
+   * kicked out from under them all end it, and only placeBomb ever grants it.
+   */
+  private revokeBombOwnership(): void {
+    const s = this.state;
+    for (const bomb of s.bombs) {
+      if (!bomb.ownerOnTile) continue;
+      const owner = s.players.find((p) => p.id === bomb.ownerId);
+      const onTile =
+        owner?.alive === true &&
+        Math.round(owner.x) === bomb.col &&
+        Math.round(owner.y) === bomb.row;
+      if (!onTile) bomb.ownerOnTile = false;
     }
   }
 

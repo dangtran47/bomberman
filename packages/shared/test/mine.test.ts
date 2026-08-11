@@ -225,6 +225,7 @@ describe('mine detonation', () => {
       col: 0,
       row: 0,
       ownerId: 'p2',
+      ownerOnTile: false,
       fuseTicks: 1,
       blastRadius: 2,
       slideDC: 0,

@@ -57,6 +57,7 @@ function addBomb(game: Game, bomb: Partial<Bomb> & Pick<Bomb, 'col' | 'row'>): B
     col: bomb.col,
     row: bomb.row,
     ownerId: bomb.ownerId ?? 'p2',
+    ownerOnTile: bomb.ownerOnTile ?? false,
     fuseTicks: bomb.fuseTicks ?? 5000,
     blastRadius: bomb.blastRadius ?? 1,
     slideDC: bomb.slideDC ?? 0,

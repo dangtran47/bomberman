@@ -554,6 +554,7 @@ describe('shooting a bomb', () => {
       col: 3,
       row: 6,
       ownerId: 'p2',
+      ownerOnTile: false,
       fuseTicks: BOMB_FUSE_TICKS,
       blastRadius: 1,
       slideDC: 0,

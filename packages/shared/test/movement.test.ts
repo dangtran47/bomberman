@@ -16,6 +16,7 @@ function boxGrid(): TileType[][] {
 
 function freshPlayer(x: number, y: number): MovementPlayer {
   return {
+    id: 'p0',
     x, y, speed: 3, kickTicks: 0, frozenTicks: 0,
     laneDir: null, turnGrace: 0,
   };
@@ -68,7 +69,12 @@ describe('stepPlayer (extracted movement)', () => {
     const world: MovementWorld = {
       grid: boxGrid(),
       ice: emptyIce(),
-      bombs: [{ col: 2, row: 1, slideDC: 0, slideDR: 0, slideCooldown: 0, slideInterval: 0 }],
+      bombs: [
+        {
+          col: 2, row: 1, ownerId: 'p1', ownerOnTile: false,
+          slideDC: 0, slideDR: 0, slideCooldown: 0, slideInterval: 0,
+        },
+      ],
     };
     const p = freshPlayer(1, 1);
     for (let i = 0; i < 20; i++) stepPlayer(world, p, 'right');

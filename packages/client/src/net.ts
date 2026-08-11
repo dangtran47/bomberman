@@ -52,6 +52,8 @@ export interface NetBomb {
   col: number;
   row: number;
   ownerId: string;
+  /** Owner still standing on the tile: they alone may overlap the bomb. */
+  ownerOnTile: boolean;
   fuseTicks: number;
   blastRadius: number;
   slideInterval: number;
