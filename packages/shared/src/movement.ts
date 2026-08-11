@@ -22,20 +22,60 @@ export interface MovementWorld { grid: TileType[][]; ice: boolean[][]; bombs: Mo
 
 const EPS = 1e-9;
 
+/** Displacement a turn-grace junction snap applied this tick. The sim is
+ * discontinuous there by design; renderers fold this into their correction
+ * smoothing so the sprite glides instead of popping sideways. */
+export interface GraceSnap { dx: number; dy: number }
+
 /**
  * Per-tick movement dispatcher: classic "move while the key is held". Ice
  * tiles are speed lanes — standing on one scales the tick's movement budget
  * by ICE_SPEED_MULT; releasing the key stops the player dead everywhere.
+ * Returns the turn-grace snap applied this tick, if any.
  */
 export function stepPlayer(
   world: MovementWorld,
   player: MovementPlayer,
   direction: Direction | null,
-): void {
-  if (player.frozenTicks > 0) return; // frozen solid: no movement at all
-  if (!direction) return;
+): GraceSnap | null {
+  if (player.frozenTicks > 0) return null; // frozen solid: no movement at all
+  if (!direction) return null;
   const boost = isIce(world, Math.round(player.x), Math.round(player.y)) ? ICE_SPEED_MULT : 1;
+  const snap = applyTurnGrace(world, player, direction);
   movePlayer(world, player, direction, boost);
+  return snap;
+}
+
+/**
+ * Turn onset: the new direction is perpendicular to the lane we were
+ * committed to. If the latency budget says we only just overran the junction,
+ * snap the perpendicular coordinate back onto it and turn there instead of
+ * sliding forward to the next tile (the overshoot players feel online).
+ */
+function applyTurnGrace(
+  world: MovementWorld,
+  player: MovementPlayer,
+  direction: Direction,
+): GraceSnap | null {
+  if (player.turnGrace <= EPS || player.laneDir === null || player.laneDir === direction) {
+    return null;
+  }
+  const horizontal = direction === 'left' || direction === 'right';
+  const leavingHorizontally = player.laneDir === 'left' || player.laneDir === 'right';
+  if (leavingHorizontally === horizontal) return null;
+  const perp = horizontal ? player.y : player.x;
+  const junction = Math.round(perp);
+  const offset = Math.abs(junction - perp);
+  if (offset <= EPS || offset > player.turnGrace + EPS) return null;
+  const col = horizontal ? Math.round(player.x) : junction;
+  const row = horizontal ? junction : Math.round(player.y);
+  if (!canEnter(world, col, row)) return null;
+  if (horizontal) {
+    player.y = junction;
+    return { dx: 0, dy: junction - perp };
+  }
+  player.x = junction;
+  return { dx: junction - perp, dy: 0 };
 }
 
 function isIce(world: MovementWorld, col: number, row: number): boolean {
@@ -60,27 +100,7 @@ function movePlayer(
   let budget = (player.speed / TICK_RATE) * budgetMult;
   const horizontal = direction === 'left' || direction === 'right';
 
-  let perp = horizontal ? player.y : player.x;
-  // Turn onset: the new direction is perpendicular to the lane we were
-  // committed to. If a latency budget says we only just overran the junction,
-  // snap the perpendicular coordinate back onto it and turn there instead of
-  // sliding forward to the next tile (the overshoot players feel online).
-  if (player.turnGrace > EPS && player.laneDir !== null && player.laneDir !== direction) {
-    const leavingHorizontally = player.laneDir === 'left' || player.laneDir === 'right';
-    if (leavingHorizontally !== horizontal) {
-      const junction = Math.round(perp);
-      const offset = Math.abs(junction - perp);
-      if (offset > EPS && offset <= player.turnGrace + EPS) {
-        const col = horizontal ? Math.round(player.x) : junction;
-        const row = horizontal ? junction : Math.round(player.y);
-        if (canEnter(world, col, row)) {
-          if (horizontal) player.y = junction;
-          else player.x = junction;
-          perp = junction;
-        }
-      }
-    }
-  }
+  const perp = horizontal ? player.y : player.x;
   const lane = laneAhead(world, player, perp, horizontal);
   if (lane === null) return true;
   const dist = Math.abs(lane - perp);

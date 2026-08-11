@@ -875,6 +875,20 @@ export class GameScene extends Phaser.Scene {
         serverBombs,
         this.pingMs ?? 0,
       );
+      // Turn grace teleports the sim onto the junction (up to GRACE_CAP tiles
+      // in one tick). Feed the jump into the same error accumulator reconcile
+      // corrections use — the sprite glides there over ~100ms instead of
+      // popping — and rebase the sub-tick blend's near end like reconcile does.
+      const snap = this.predictor.lastGraceSnap;
+      if (snap) {
+        this.predictionError.x -= snap.dx;
+        this.predictionError.y -= snap.dy;
+        const prev = this.prevTickPos.get(this.myId);
+        if (prev) {
+          prev.x += snap.dx;
+          prev.y += snap.dy;
+        }
+      }
       this.predictor.ageBombs();
       seq = input.seq;
     }

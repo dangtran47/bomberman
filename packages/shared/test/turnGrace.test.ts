@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { createGame } from '../src/game';
 import type { Game } from '../src/game';
 import { GRID_HEIGHT, GRID_WIDTH } from '../src/constants';
+import { stepPlayer } from '../src/movement';
+import type { MovementWorld } from '../src/movement';
 import { TileType } from '../src/types';
 import type { PlayerInput } from '../src/types';
 
@@ -47,6 +49,25 @@ describe('turn grace', () => {
     g.tick({ p1: up(200) }); // grace 0.3 < 0.4
     expect(p.x).toBeGreaterThan(5.4); // slides forward toward column 6 (overshoot path intact)
     expect(p.y).toBeCloseTo(7, 6); // has not turned up yet
+  });
+
+  it('reports the junction snap displacement so renderers can smooth it', () => {
+    const world: MovementWorld = {
+      grid: openGrid(),
+      ice: Array.from({ length: GRID_HEIGHT }, () => Array<boolean>(GRID_WIDTH).fill(false)),
+      bombs: [],
+    };
+    const p = {
+      x: 5.3, y: 7, speed: 3, kickTicks: 0, frozenTicks: 0,
+      laneDir: 'right' as const, turnGrace: 0.3,
+    };
+    const snap = stepPlayer(world, p, 'up');
+    expect(snap).not.toBeNull();
+    expect(snap!.dx).toBeCloseTo(-0.3, 6); // teleported back onto column 5
+    expect(snap!.dy).toBe(0);
+
+    // Aligned now: the next tick moves normally and reports no snap.
+    expect(stepPlayer(world, p, 'up')).toBeNull();
   });
 
   it('is inert offline (no pingMs -> grace 0 -> forward slide unchanged)', () => {

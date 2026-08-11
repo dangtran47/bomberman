@@ -118,6 +118,18 @@ describe('Predictor', () => {
     expect(q.player.y).toBeCloseTo(7, 6);
   });
 
+  it('exposes the grace snap so the scene can smooth it visually', () => {
+    const p = new Predictor({ ...spawn(), x: 5.3, y: 7, laneDir: 'right' });
+    p.step('up', false, boxGrid(), emptyIce(), [], 200);
+    expect(p.lastGraceSnap).not.toBeNull();
+    expect(p.lastGraceSnap!.dx).toBeCloseTo(-0.3, 6);
+    expect(p.lastGraceSnap!.dy).toBe(0);
+
+    // Aligned now: the next step must clear the snap again.
+    p.step('up', false, boxGrid(), emptyIce(), [], 200);
+    expect(p.lastGraceSnap).toBeNull();
+  });
+
   it('stops predicting once dead', () => {
     const p = new Predictor(spawn());
     p.reconcile({ ...spawn(), alive: false }, 0, boxGrid(), emptyIce(), []);

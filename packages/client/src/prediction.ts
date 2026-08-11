@@ -1,5 +1,11 @@
 import { BOMB_FUSE_TICKS, GRACE_CAP, PING_CAP_MS, TileType, stepPlayer } from '@bomberman/shared';
-import type { Direction, MovementBomb, MovementPlayer, MovementWorld } from '@bomberman/shared';
+import type {
+  Direction,
+  GraceSnap,
+  MovementBomb,
+  MovementPlayer,
+  MovementWorld,
+} from '@bomberman/shared';
 
 export interface PredictedPlayer extends MovementPlayer {
   alive: boolean;
@@ -41,6 +47,10 @@ export class Predictor {
   player: PredictedPlayer;
   pending: PendingInput[] = [];
   bombs: PredictedBomb[] = [];
+  /** Junction snap the most recent apply() performed. The scene reads it right
+   * after step() and folds it into the render error smoothing, so the sim's
+   * intentional teleport shows as a glide instead of a sideways pop. */
+  lastGraceSnap: GraceSnap | null = null;
   private nextSeq = 0;
 
   constructor(initial: PredictedPlayer) {
@@ -95,6 +105,7 @@ export class Predictor {
     ice: boolean[][],
     serverBombs: Obstacle[],
   ): void {
+    this.lastGraceSnap = null;
     if (!this.player.alive) return;
     if (this.player.kickTicks > 0) this.player.kickTicks--;
     // Same formula as GameImpl.tick: the server grants this exact latitude for
@@ -109,7 +120,7 @@ export class Predictor {
       ice,
       bombs: this.obstacles(serverBombs).map(asMovementBomb),
     };
-    stepPlayer(world, this.player, input.direction);
+    this.lastGraceSnap = stepPlayer(world, this.player, input.direction);
     if (this.player.frozenTicks > 0) this.player.frozenTicks--;
   }
 
