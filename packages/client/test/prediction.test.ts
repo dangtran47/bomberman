@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createGame, TileType } from '@bomberman/shared';
+import { FREEZE_DURATION_TICKS, FREEZE_WINDUP_TICKS, createGame, TileType } from '@bomberman/shared';
 import type { Direction } from '@bomberman/shared';
 import { Predictor } from '../src/prediction';
 import type { PredictedPlayer } from '../src/prediction';
@@ -128,6 +128,21 @@ describe('Predictor', () => {
     // Aligned now: the next step must clear the snap again.
     p.step('up', false, boxGrid(), emptyIce(), [], 200);
     expect(p.lastGraceSnap).toBeNull();
+  });
+
+  it('moves and places bombs during the freeze windup, locks once it ends', () => {
+    const p = new Predictor({
+      ...spawn(),
+      frozenTicks: FREEZE_DURATION_TICKS + FREEZE_WINDUP_TICKS,
+    });
+    p.step('right', true, boxGrid(), emptyIce(), []);
+    expect(p.player.x).toBeGreaterThan(1); // windup: still free
+    expect(p.bombs).toHaveLength(1);
+
+    p.player.frozenTicks = FREEZE_DURATION_TICKS; // lock engaged
+    const lockedX = p.player.x;
+    p.step('right', false, boxGrid(), emptyIce(), []);
+    expect(p.player.x).toBe(lockedX);
   });
 
   it('stops predicting once dead', () => {

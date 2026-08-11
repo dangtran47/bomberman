@@ -3,6 +3,7 @@ import {
   GRID_WIDTH,
   ICE_SPEED_MULT,
   TICK_RATE,
+  freezeLocks,
   kickSlideInterval,
 } from './constants';
 import { TileType } from './types';
@@ -38,7 +39,7 @@ export function stepPlayer(
   player: MovementPlayer,
   direction: Direction | null,
 ): GraceSnap | null {
-  if (player.frozenTicks > 0) return null; // frozen solid: no movement at all
+  if (freezeLocks(player.frozenTicks)) return null; // frozen solid (windup locks nothing)
   if (!direction) return null;
   const boost = isIce(world, Math.round(player.x), Math.round(player.y)) ? ICE_SPEED_MULT : 1;
   const snap = applyTurnGrace(world, player, direction);

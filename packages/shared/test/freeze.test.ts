@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   FREEZE_DURATION_TICKS,
+  FREEZE_WINDUP_TICKS,
   GRID_HEIGHT,
   GRID_WIDTH,
   GUN_AMMO_PER_PICKUP,
@@ -73,7 +74,7 @@ describe('freeze-time pickup', () => {
     const game = gameWithPickup();
     run(game, 1);
     expect(player(game, 'p1').frozenTicks).toBe(0);
-    expect(player(game, 'p2').frozenTicks).toBe(FREEZE_DURATION_TICKS);
+    expect(player(game, 'p2').frozenTicks).toBe(FREEZE_DURATION_TICKS + FREEZE_WINDUP_TICKS);
   });
 
   it('skips dead players', () => {
@@ -95,7 +96,35 @@ describe('freeze-time pickup', () => {
       type: PowerupType.FreezeTime,
     });
     run(game, 1);
-    expect(player(game, 'p2').frozenTicks).toBe(FREEZE_DURATION_TICKS);
+    expect(player(game, 'p2').frozenTicks).toBe(FREEZE_DURATION_TICKS + FREEZE_WINDUP_TICKS);
+  });
+});
+
+describe('freeze windup (telegraph)', () => {
+  // The windup exists so every victim's client learns about the freeze BEFORE
+  // it locks movement: no mispredicted movement, no rubber-band on onset.
+  it('keeps moving and acting during the windup, locks when it ends', () => {
+    const game = twoPlayerGame();
+    const p2 = player(game, 'p2');
+    p2.frozenTicks = FREEZE_DURATION_TICKS + FREEZE_WINDUP_TICKS;
+    const startX = p2.x;
+
+    run(game, FREEZE_WINDUP_TICKS, { p2: move('left') });
+    expect(p2.x).toBeLessThan(startX); // telegraph phase: still free
+
+    const lockedX = p2.x;
+    run(game, FREEZE_DURATION_TICKS, { p2: move('left') });
+    expect(p2.x).toBe(lockedX); // locked for the full freeze duration
+
+    run(game, 1, { p2: move('left') });
+    expect(p2.x).toBeLessThan(lockedX); // thawed
+  });
+
+  it('still allows a bomb during the windup', () => {
+    const game = twoPlayerGame();
+    player(game, 'p2').frozenTicks = FREEZE_DURATION_TICKS + FREEZE_WINDUP_TICKS;
+    run(game, 1, { p2: act({ placeBomb: true }) });
+    expect(game.state.bombs).toHaveLength(1);
   });
 });
 

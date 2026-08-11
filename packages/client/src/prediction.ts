@@ -1,4 +1,11 @@
-import { BOMB_FUSE_TICKS, GRACE_CAP, PING_CAP_MS, TileType, stepPlayer } from '@bomberman/shared';
+import {
+  BOMB_FUSE_TICKS,
+  GRACE_CAP,
+  PING_CAP_MS,
+  TileType,
+  freezeLocks,
+  stepPlayer,
+} from '@bomberman/shared';
 import type {
   Direction,
   GraceSnap,
@@ -112,7 +119,7 @@ export class Predictor {
     // this exact input, so replay through the shared movement code converges.
     const oneWaySec = Math.min(input.pingMs, PING_CAP_MS) / 2 / 1000;
     this.player.turnGrace = Math.min(GRACE_CAP, this.player.speed * oneWaySec);
-    if (input.placeBomb && this.player.frozenTicks <= 0) {
+    if (input.placeBomb && !freezeLocks(this.player.frozenTicks)) {
       this.tryPlaceBomb(input.seq, grid, serverBombs);
     }
     const world: MovementWorld = {

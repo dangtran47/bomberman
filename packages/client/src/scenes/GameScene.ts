@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import {
+  FREEZE_DURATION_TICKS,
   GRID_HEIGHT,
   GRID_WIDTH,
   KICK_WARNING_TICKS,
@@ -1404,7 +1405,13 @@ export class GameScene extends Phaser.Scene {
       const shieldBlinkOn = Math.floor(player.shieldTicks / 5) % 2 === 0;
       const warning = player.kickTicks > 0 && player.kickTicks <= KICK_WARNING_TICKS;
       const blinkOn = Math.floor(player.kickTicks / 5) % 2 === 0;
-      if (player.alive && player.frozenTicks > 0) sprite.setTint(FREEZE_TINT);
+      // Freeze windup: the lock has not engaged yet — blink as a telegraph.
+      const freezeWindup = player.frozenTicks > FREEZE_DURATION_TICKS;
+      const freezeBlinkOn = Math.floor(player.frozenTicks / 5) % 2 === 0;
+      if (player.alive && player.frozenTicks > 0) {
+        if (!freezeWindup || freezeBlinkOn) sprite.setTint(FREEZE_TINT);
+        else sprite.clearTint();
+      }
       else if (player.alive && player.shieldTicks > SHIELD_WARNING_TICKS) sprite.setTint(SHIELD_TINT);
       else if (player.alive && shieldWarning) {
         if (shieldBlinkOn) sprite.setTint(SHIELD_TINT);

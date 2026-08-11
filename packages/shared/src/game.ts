@@ -5,6 +5,7 @@ import {
   BOMB_FUSE_TICKS,
   EXPLOSION_DURATION_TICKS,
   FREEZE_DURATION_TICKS,
+  FREEZE_WINDUP_TICKS,
   GRACE_CAP,
   GRID_HEIGHT,
   GRID_WIDTH,
@@ -22,6 +23,7 @@ import {
   SPEED_INCREMENT,
   SUDDEN_DEATH_INTERVAL_TICKS,
   SUDDEN_DEATH_START_TICKS,
+  freezeLocks,
   minePhase,
   powerupTypeForRoll,
 } from './constants';
@@ -173,10 +175,12 @@ function applyPowerup(player: Player, type: PowerupType, players: Player[]): voi
       break;
     // Freeze-time is instant: it holds no slot and clears nothing on the picker.
     // Orthogonal to the shield: a shielded victim still freezes, and stays immune.
+    // The windup head start is a telegraph — victims keep moving until every
+    // client has learned of the freeze, then all lock on the same tick.
     case PowerupType.FreezeTime:
       for (const other of players) {
         if (other === player || !other.alive) continue;
-        other.frozenTicks = FREEZE_DURATION_TICKS;
+        other.frozenTicks = FREEZE_DURATION_TICKS + FREEZE_WINDUP_TICKS;
       }
       break;
   }
@@ -257,7 +261,8 @@ class GameImpl implements Game {
       player.turnGrace = Math.min(GRACE_CAP, player.speed * oneWaySec);
       // Frozen solid: inputs still maintain trigger bookkeeping (so nothing
       // fires spuriously on unfreeze) but no action or movement happens.
-      const frozen = player.frozenTicks > 0;
+      // The windup head of the countdown locks nothing (see FREEZE_WINDUP_TICKS).
+      const frozen = freezeLocks(player.frozenTicks);
       if (input.direction && !frozen) player.facing = input.direction; // aims the skills too
       // Space is one button: while a skill is held it triggers that skill and
       // places no bombs, and it fires on the press (a held trigger would burn

@@ -76,6 +76,19 @@ export const MINE_BURY_TICKS = secs(5);
 
 /** Freeze-time pickup: every other alive player is frozen this long. */
 export const FREEZE_DURATION_TICKS = secs(3);
+/**
+ * Telegraph before the freeze locks: the pickup sets frozenTicks to
+ * WINDUP + DURATION and the lock only engages for the final DURATION ticks.
+ * Long enough that every victim's client (ping capped at PING_CAP_MS) learns
+ * about the freeze BEFORE it stops their movement, so the predictor and the
+ * server lock on the same tick — no mispredicted movement, no rubber-band.
+ */
+export const FREEZE_WINDUP_TICKS = secs(0.4);
+
+/** True when a freeze countdown actually locks the player (windup elapsed). */
+export function freezeLocks(frozenTicks: number): boolean {
+  return frozenTicks > 0 && frozenTicks <= FREEZE_DURATION_TICKS;
+}
 
 /** A mine's phase from its age: 0 inert (harmless), 1 armed, 2 buried. */
 export function minePhase(ticks: number): 0 | 1 | 2 {
