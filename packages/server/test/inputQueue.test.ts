@@ -23,13 +23,34 @@ describe('InputQueue', () => {
     expect(q.acked('p0')).toBe(2);
   });
 
-  it('holds the last direction with no actions when the queue runs dry, ack unchanged', () => {
+  it('gives the player no input on a dry tick (stall pauses the hold), ack unchanged', () => {
     const q = new InputQueue();
     q.push('p0', msg(1, 'left', { placeBomb: true }));
     q.consume();
-    const stalled = q.consume().get('p0');
-    expect(stalled).toMatchObject({ direction: 'left', placeBomb: false });
+    // Nothing arrived for this tick: the sim must not move the player, because
+    // the client never predicted a tick here. Repeating the last direction
+    // would invent movement the client has to be rebased over once the stalled
+    // inputs land.
+    expect(q.consume().has('p0')).toBe(false);
     expect(q.acked('p0')).toBe(1);
+  });
+
+  it('applies exactly the sent inputs across a stall: hold length is reproduced, not stretched', () => {
+    const q = new InputQueue();
+    q.push('p0', msg(1, 'right'));
+    q.consume();
+    // TCP stall: six ticks pass with nothing queued.
+    for (let i = 0; i < 6; i++) expect(q.consume().has('p0')).toBe(false);
+    // The burst lands; each queued input is applied once, in order.
+    for (let s = 2; s <= 6; s++) q.push('p0', msg(s, 'right'));
+    let moved = 0;
+    for (let s = 2; s <= 6; s++) {
+      expect(q.consume().get('p0')).toMatchObject({ direction: 'right' });
+      expect(q.acked('p0')).toBe(s);
+      moved++;
+    }
+    expect(moved).toBe(5);
+    expect(q.consume().has('p0')).toBe(false);
   });
 
   it('rejects stale and duplicate seqs', () => {
@@ -39,8 +60,8 @@ describe('InputQueue', () => {
     q.push('p0', msg(3, 'up'));
     q.consume();
     expect(q.acked('p0')).toBe(5);
-    // Both later pushes were dropped: next consume is a dry hold, not 'down'/'up'.
-    expect(q.consume().get('p0')).toMatchObject({ direction: 'right' });
+    // Both later pushes were dropped: next consume is a dry tick, not 'down'/'up'.
+    expect(q.consume().has('p0')).toBe(false);
     expect(q.acked('p0')).toBe(5);
   });
 
@@ -69,13 +90,6 @@ describe('InputQueue', () => {
       expect(input.direction).toBe('up');
       expect(input.pingMs).toBeUndefined();
     }
-  });
-
-  it('repeats the last pingMs on dry-hold ticks so turn grace stays stable', () => {
-    const q = new InputQueue();
-    q.push('p0', msg(1, 'left', { pingMs: 80 }));
-    q.consume();
-    expect(q.consume().get('p0')).toMatchObject({ direction: 'left', pingMs: 80 });
   });
 
   it('treats a message without seq as legacy latest-wins with sticky actions', () => {

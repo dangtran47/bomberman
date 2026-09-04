@@ -30,10 +30,6 @@ interface PlayerEntry {
   lastSeq: number;
   /** Seq of the last input actually applied to a tick (the published ack). */
   acked: number;
-  /** Direction to keep applying when the queue runs dry (TCP stall). */
-  heldDirection: Direction | null;
-  /** Last consumed pingMs, repeated on dry-hold ticks so grace stays stable. */
-  heldPing: number | undefined;
   /** Pre-seq clients: latest-wins direction with sticky one-shot action flags. */
   legacy: LegacyEntry | null;
 }
@@ -45,12 +41,17 @@ interface PlayerEntry {
  * old latest-wins buffer quantized press/release against tick boundaries and
  * network jitter, which made the same hold cover different distances.
  *
- * The reproduction is exact modulo queue starvation: when a TCP stall empties the
- * queue, the dry-hold keeps repeating the last direction for ticks the client never
- * sent, so those ticks are the server's invention rather than a replay. Stalled
- * inputs still apply once they arrive within the backlog cap; a longer stall drops
- * the oldest queued inputs per MAX_QUEUE. Either way a stall stretches a hold
- * rather than pausing it.
+ * A dry tick (TCP stall, or the client dropping its own backlog after a long
+ * frame) hands the sim no input for that player, so they stand still until the
+ * stalled inputs land and are applied one per tick. Every tick the server
+ * applies is therefore one the client predicted, and the reconcile after the
+ * stall replays onto the same position the prediction reached: a stall pauses
+ * a hold, never stretches it. Repeating the last direction instead would move
+ * the player for ticks the client never sent, and that invented distance is
+ * what the client had to be rebased over (the forward glide after a hitch) and
+ * what pushed a turn past its grace budget (the missed corner). A stall longer
+ * than the backlog cap drops the oldest queued inputs per MAX_QUEUE; the ack
+ * skips them so the client discards its matching pending inputs.
  */
 export class InputQueue {
   private readonly players = new Map<string, PlayerEntry>();
@@ -112,15 +113,14 @@ export class InputQueue {
     if (entry.queue.length > MAX_QUEUE) entry.queue.shift();
   }
 
-  /** One tick's inputs: pops the oldest queued input per player (or a dry hold). */
+  /** One tick's inputs: pops the oldest queued input per player. A player with
+   * nothing queued is left out, which the sim reads as idle. */
   consume(): Map<string, PlayerInput> {
     const snapshot = new Map<string, PlayerInput>();
     for (const [id, entry] of this.players) {
       const next = entry.queue.shift();
       if (next) {
         entry.acked = next.seq;
-        entry.heldDirection = next.direction;
-        entry.heldPing = next.pingMs;
         snapshot.set(id, {
           direction: next.direction,
           placeBomb: next.placeBomb,
@@ -142,10 +142,8 @@ export class InputQueue {
         l.fireGun = false;
         l.swingHammer = false;
         l.placeMine = false;
-      } else {
-        // Queue dry (TCP stall): hold the last direction, no actions, ack frozen.
-        snapshot.set(id, { direction: entry.heldDirection, placeBomb: false, pingMs: entry.heldPing });
       }
+      // Queue dry: no entry for this player this tick, ack frozen (see class doc).
     }
     return snapshot;
   }
@@ -165,7 +163,7 @@ export class InputQueue {
   private entry(playerId: string): PlayerEntry {
     let entry = this.players.get(playerId);
     if (!entry) {
-      entry = { queue: [], lastSeq: 0, acked: 0, heldDirection: null, heldPing: undefined, legacy: null };
+      entry = { queue: [], lastSeq: 0, acked: 0, legacy: null };
       this.players.set(playerId, entry);
     }
     return entry;
